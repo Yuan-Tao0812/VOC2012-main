@@ -4,8 +4,8 @@ from collections import Counter
 from tqdm import tqdm
 
 # === 路径配置（改成你自己的实际路径） ===
-YOLO_LABELS_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-Segmentation-val/labels/"         # YOLO格式标签文件夹
-OUTPUT_JSONL_PATH = "/content/drive/MyDrive/VOC2012/VOC2012-Segmentation-val/prompt.json"
+YOLO_LABELS_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-val/labels/"         # YOLO格式标签文件夹
+OUTPUT_JSONL_PATH = "/content/drive/MyDrive/VOC2012/VOC2012-val/prompt.json"
 SOURCE_IMG_DIR = "segmaps"  # segmentation maps
 TARGET_IMG_DIR = "images"  # original images
 
@@ -40,7 +40,7 @@ def generate_prompt_lines(yolo_dir, output_path):
             class_ids = load_yolo_labels(label_path)
 
             if not class_ids:
-                prompt = "no objects"
+                prompt = "no objects, voc2012 style"
             else:
                 counts = Counter(class_ids)
                 parts = []
@@ -48,7 +48,7 @@ def generate_prompt_lines(yolo_dir, output_path):
                     class_name = VOC_CLASSES[cls_id]
                     plural = class_name + "s" if count > 1 else class_name
                     parts.append(f"{count} {plural}")
-                prompt = ", ".join(parts)
+                prompt = ", ".join(parts) + ", voc2012 style"
 
             line_obj = {
                 "source": f"{SOURCE_IMG_DIR}/{image_id}.png",
