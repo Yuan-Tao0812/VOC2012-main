@@ -119,15 +119,16 @@ for epoch in range(EPOCHS):
         encoder_hidden_states = text_encoder(input_ids=input_ids, attention_mask=attention_mask)[0]
 
         # Step 1: 将图像编码为 latent 空间
-        vae_device = pipe.vae.device
-        vae_dtype = pipe.vae.dtype
+        DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        print(f"image_tensors device={image_tensors.device}, dtype={image_tensors.dtype}")
-        print(f"vae.device={pipe.vae.device}, vae.dtype={pipe.vae.dtype}")
-
-        image_tensors = image_tensors.to(device=vae_device, dtype=vae_dtype)
-        print(f"[Debug] After to(): image_tensors device={image_tensors.device}, dtype={image_tensors.dtype}")
-
+        # 确保模型组件都在 CUDA 上
+        pipe.vae = pipe.vae.to(device=DEVICE, dtype=torch.float16)
+        pipe.unet = pipe.unet.to(device=DEVICE, dtype=torch.float16)
+        pipe.controlnet = pipe.controlnet.to(device=DEVICE, dtype=torch.float16)
+        print(f"[Debug] image_tensors: {image_tensors.device}, {image_tensors.dtype}")
+        print(f"[Debug] vae weight: {next(pipe.vae.parameters()).device}")
+        # 确保 image_tensors 也在同一个设备和 dtype 上
+        image_tensors = image_tensors.to(device=DEVICE, dtype=torch.float16)
         latents = pipe.vae.encode(image_tensors).latent_dist.sample()
         latents = latents * pipe.vae.config.scaling_factor  # 非常关键！别忘了缩放
         latents = latents.to(dtype=pipe.unet.dtype, device=pipe.device)
