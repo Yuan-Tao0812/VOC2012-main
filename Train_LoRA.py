@@ -18,7 +18,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 1
-EPOCHS = 30
+EPOCHS = 50
 LR = 1e-4
 MAX_TOKEN_LENGTH = 77
 
@@ -71,6 +71,9 @@ class ControlnetDataset(Dataset):
         image = Image.open(image_path).convert("RGB").resize((512, 512))
         layout = Image.open(layout_path).convert("RGB").resize((512, 512))
 
+        image_tensor = pipe.feature_extractor(images=image, return_tensors="pt").pixel_values[0]
+        layout_tensor = pipe.feature_extractor(images=layout, return_tensors="pt").pixel_values[0]
+
         tokenized = self.tokenizer(
             prompt,
             padding="max_length",
@@ -80,8 +83,8 @@ class ControlnetDataset(Dataset):
         )
 
         return {
-            "image": image,
-            "layout": layout,
+            "image": image_tensor,
+            "layout": layout_tensor,
             "input_ids": tokenized.input_ids[0],
             "attention_mask": tokenized.attention_mask[0],
             "prompt": prompt,
