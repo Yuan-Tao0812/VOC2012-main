@@ -1,7 +1,3 @@
-# 安装依赖（Colab执行一次）
-!pip install diffusers transformers accelerate datasets peft huggingface_hub --quiet
-!pip install --upgrade Pillow tqdm --quiet
-
 import os
 import json
 from PIL import Image
