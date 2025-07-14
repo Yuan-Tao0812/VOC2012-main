@@ -121,7 +121,15 @@ for epoch in range(EPOCHS):
         noise = torch.randn_like(image_tensors).to(DEVICE)
         timesteps = torch.randint(0, pipe.scheduler.num_train_timesteps, (BATCH_SIZE,), device=DEVICE).long()
 
-        noise_pred = pipe.unet(image_tensors, timesteps, encoder_hidden_states, controlnet_cond=layout_tensors).sample
+        outputs = pipe(
+            images=image_tensors,
+            timesteps=timesteps,
+            encoder_hidden_states=encoder_hidden_states,
+            controlnet_conditioning_image=layout_tensors,
+            return_dict=True,
+        )
+
+        noise_pred = outputs.sample
 
         loss = nn.MSELoss()(noise_pred, noise)
         loss.backward()
