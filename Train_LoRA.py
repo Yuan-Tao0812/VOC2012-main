@@ -122,7 +122,7 @@ for epoch in range(EPOCHS):
         timesteps = torch.randint(0, pipe.scheduler.num_train_timesteps, (BATCH_SIZE,), device=DEVICE).long()
 
         outputs = pipe(
-            images=image_tensors,
+            image=image_tensors,
             timesteps=timesteps,
             prompt_embeds=encoder_hidden_states,
             controlnet_conditioning_image=layout_tensors,
