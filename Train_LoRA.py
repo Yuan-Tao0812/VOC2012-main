@@ -1,43 +1,66 @@
 import os
 import json
 from PIL import Image
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import torch
-
+from torch import nn, optim
+from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
-from transformers import CLIPTokenizer, TrainingArguments
-from peft import LoraConfig
-from peft.trainer import PeftTrainer
+from peft import LoraConfig, get_peft_model
 
-# ==== 路径配置 ====
+# === 配置 ===
 DATA_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train/"
 PROMPT_FILE = "prompt.jsonl"
 OUTPUT_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/trained_lora_controlnet/"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ==== 加载模型 ====
-controlnet = ControlNetModel.from_pretrained(
-    "lllyasviel/control_v11p_sd15_scribble",
-    torch_dtype=torch.float16
-)
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+BATCH_SIZE = 1
+EPOCHS = 30
+LR = 1e-4
+MAX_TOKEN_LENGTH = 77
 
+# === 加载模型 ===
+controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_scribble", torch_dtype=torch.float16)
 pipe = StableDiffusionControlNetPipeline.from_pretrained(
-    "stable-diffusion-v1-5/stable-diffusion-v1-5",  # 推荐使用这个官方v1.5模型
+    "stable-diffusion-v1-5/stable-diffusion-v1-5",
     controlnet=controlnet,
     torch_dtype=torch.float16
-).to("cuda")
+).to(DEVICE)
+pipe.enable_model_cpu_offload()  # 节省显存
 
+# === LoRA 配置 ===
+lora_config = LoraConfig(
+    r=8,
+    lora_alpha=16,
+    target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+    lora_dropout=0.1,
+    bias="none",
+    task_type="TEXT_TO_IMAGE"
+)
+
+# 对 UNet 和 ControlNet 注入 LoRA
+pipe.unet = get_peft_model(pipe.unet, lora_config)
+pipe.controlnet = get_peft_model(pipe.controlnet, lora_config)
+
+pipe.unet.train()
+pipe.controlnet.train()
+
+# === 文本编码 ===
 tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+text_encoder = pipe.text_encoder
+text_encoder.train()
 
-# ==== 自定义数据集 ====
+
+# === 数据集定义 ===
 class ControlnetDataset(Dataset):
-    def __init__(self, root_dir, jsonl_file, feature_extractor, tokenizer):
+    def __init__(self, root_dir, jsonl_file, tokenizer, max_length=MAX_TOKEN_LENGTH):
         self.root = root_dir
-        self.feature_extractor = feature_extractor
         self.tokenizer = tokenizer
-        with open(os.path.join(root_dir, jsonl_file), 'r') as f:
-            self.entries = [json.loads(line.strip()) for line in f]
+        self.max_length = max_length
+        with open(os.path.join(root_dir, jsonl_file), "r") as f:
+            self.entries = [json.loads(line) for line in f]
 
     def __len__(self):
         return len(self.entries)
@@ -48,82 +71,81 @@ class ControlnetDataset(Dataset):
         layout_path = os.path.join(self.root, item["layout_path"])
         prompt = item["prompt"]
 
+        # 读图并resize
         image = Image.open(image_path).convert("RGB").resize((512, 512))
         layout = Image.open(layout_path).convert("RGB").resize((512, 512))
 
-        image_tensor = self.feature_extractor(images=image, return_tensors="pt").pixel_values[0]
-        layout_tensor = self.feature_extractor(images=layout, return_tensors="pt").pixel_values[0]
-
-        encoding = self.tokenizer(prompt, padding="max_length", max_length=self.tokenizer.model_max_length, truncation=True, return_tensors="pt")
+        # 文本tokenize
+        tokenized = self.tokenizer(
+            prompt,
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
 
         return {
-            "pixel_values": image_tensor,
-            "controlnet_cond": layout_tensor,
-            "input_ids": encoding.input_ids[0],
-            "attention_mask": encoding.attention_mask[0],
+            "image": image,
+            "layout": layout,
+            "input_ids": tokenized.input_ids[0],
+            "attention_mask": tokenized.attention_mask[0],
+            "prompt": prompt,
         }
 
-dataset = ControlnetDataset(DATA_DIR, PROMPT_FILE, pipe.feature_extractor, tokenizer)
 
-# ==== 配置 LoRA ====
-lora_config = LoraConfig(
-    r=8,
-    lora_alpha=16,
-    target_modules=["to_q", "to_k", "to_v", "to_out.0"],  # 对UNet中的Cross-Attention层微调
-    lora_dropout=0.1,
-    bias="none",
-    task_type="TEXT_TO_IMAGE"
+dataset = ControlnetDataset(DATA_DIR, PROMPT_FILE, tokenizer)
+dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+
+# === 优化器 ===
+optimizer = optim.AdamW(
+    list(pipe.unet.parameters()) + list(pipe.controlnet.parameters()) + list(text_encoder.parameters()),
+    lr=LR
 )
 
-# LoRA只套pipe.unet，ControlNet参数冻结
-from peft import get_peft_model
-model = get_peft_model(pipe.unet, lora_config)
-model.train()
+# === 训练主循环 ===
+from diffusers.utils import PIL_INTERPOLATION
 
-# ==== 训练参数 ====
-training_args = TrainingArguments(
-    per_device_train_batch_size=1,
-    gradient_accumulation_steps=2,
-    num_train_epochs=50,
-    learning_rate=1e-4,
-    output_dir=OUTPUT_DIR,
-    remove_unused_columns=False,
-    logging_steps=10,
-    save_steps=100,
-    save_total_limit=1,
-    report_to="none"
-)
+for epoch in range(EPOCHS):
+    pipe.unet.train()
+    pipe.controlnet.train()
+    text_encoder.train()
 
-# ==== 自定义 Trainer (兼容 ControlNet输入) ====
-from transformers import Trainer
+    loop = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{EPOCHS}")
+    for batch in loop:
+        optimizer.zero_grad()
 
-class ControlNetTrainer(PeftTrainer):
-    def compute_loss(self, model, inputs, return_outputs=False):
-        pixel_values = inputs.pop("pixel_values")
-        controlnet_cond = inputs.pop("controlnet_cond")
-        input_ids = inputs.pop("input_ids")
-        attention_mask = inputs.pop("attention_mask")
+        # 处理图像和layout
+        images = [img for img in batch["image"]]
+        layouts = [lay for lay in batch["layout"]]
 
-        # forward with controlnet_cond和prompt编码
-        outputs = model(
-            pixel_values=pixel_values.unsqueeze(0).to(model.device),
-            controlnet_cond=controlnet_cond.unsqueeze(0).to(model.device),
-            input_ids=input_ids.unsqueeze(0).to(model.device),
-            attention_mask=attention_mask.unsqueeze(0).to(model.device),
-        )
-        loss = outputs.loss
+        # 使用 pipeline 自带的 feature extractor 将 PIL 图转 tensor
+        image_tensors = pipe.feature_extractor(images=images, return_tensors="pt").pixel_values.to(DEVICE)
+        layout_tensors = pipe.feature_extractor(images=layouts, return_tensors="pt").pixel_values.to(DEVICE)
 
-        return (loss, outputs) if return_outputs else loss
+        # 编码文本
+        input_ids = batch["input_ids"].to(DEVICE)
+        attention_mask = batch["attention_mask"].to(DEVICE)
+        encoder_hidden_states = text_encoder(input_ids=input_ids, attention_mask=attention_mask)[0]
 
-trainer = ControlNetTrainer(
-    model=model,
-    args=training_args,
-    train_dataset=dataset,
-    peft_config=lora_config,
-)
+        # 计算噪声和时间步
+        noise = torch.randn_like(image_tensors).to(DEVICE)
+        timesteps = torch.randint(0, pipe.scheduler.num_train_timesteps, (BATCH_SIZE,), device=DEVICE).long()
 
-# ==== 开始训练 ====
-trainer.train()
-trainer.save_model(OUTPUT_DIR)
+        # 得到噪声的预测
+        noise_pred = pipe.unet(image_tensors, timesteps, encoder_hidden_states, controlnet_cond=layout_tensors).sample
 
-print("训练完成，模型保存在：", OUTPUT_DIR)
+        # 计算loss（MSE）
+        loss = nn.MSELoss()(noise_pred, noise)
+        loss.backward()
+        optimizer.step()
+
+        loop.set_postfix(loss=loss.item())
+
+    # 每隔几个epoch保存一次模型
+    if (epoch + 1) % 5 == 0:
+        print(f"Saving model at epoch {epoch + 1} ...")
+        pipe.unet.save_pretrained(os.path.join(OUTPUT_DIR, f"unet_lora_epoch{epoch + 1}"))
+        pipe.controlnet.save_pretrained(os.path.join(OUTPUT_DIR, f"controlnet_lora_epoch{epoch + 1}"))
+        text_encoder.save_pretrained(os.path.join(OUTPUT_DIR, f"text_encoder_epoch{epoch + 1}"))
+
+print("训练结束，模型已保存。")
