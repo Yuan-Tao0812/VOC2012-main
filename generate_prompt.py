@@ -4,8 +4,8 @@ from collections import Counter
 from tqdm import tqdm
 
 # === 路径配置（改成你自己的实际路径） ===
-YOLO_LABELS_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-val/labels/"         # YOLO格式标签文件夹
-OUTPUT_JSONL_PATH = "/content/drive/MyDrive/VOC2012/VOC2012-val/prompt.json"
+YOLO_LABELS_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-train/labels/"         # YOLO格式标签文件夹
+OUTPUT_JSONL_PATH = "/content/drive/MyDrive/VOC2012/VOC2012-train/prompt.json"
 SOURCE_IMG_DIR = "segmaps"  # segmentation maps
 TARGET_IMG_DIR = "images"  # original images
 
