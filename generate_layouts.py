@@ -4,8 +4,8 @@ import numpy as np
 from tqdm import tqdm
 
 def draw_yolo_boxes(label_file, img_size=(512, 512)):
-    """将一个YOLO标签文件转换为黑底白框图像"""
-    img = np.zeros((img_size[1], img_size[0], 3), dtype=np.uint8)
+    """将一个YOLO标签文件转换为单通道黑底白框图像，带边界检查"""
+    img = np.zeros((img_size[1], img_size[0]), dtype=np.uint8)  # 单通道黑底图
 
     with open(label_file, 'r') as f:
         for line in f:
@@ -13,14 +13,13 @@ def draw_yolo_boxes(label_file, img_size=(512, 512)):
             if len(parts) != 5:
                 continue
             class_id, x_center, y_center, w, h = map(float, parts)
-            x1 = int((x_center - w / 2) * img_size[0])
-            y1 = int((y_center - h / 2) * img_size[1])
-            x2 = int((x_center + w / 2) * img_size[0])
-            y2 = int((y_center + h / 2) * img_size[1])
-            cv2.rectangle(img, (x1, y1), (x2, y2), (255, 255, 255), 2)
+            x1 = max(0, int((x_center - w / 2) * img_size[0]))
+            y1 = max(0, int((y_center - h / 2) * img_size[1]))
+            x2 = min(img_size[0] - 1, int((x_center + w / 2) * img_size[0]))
+            y2 = min(img_size[1] - 1, int((y_center + h / 2) * img_size[1]))
+            cv2.rectangle(img, (x1, y1), (x2, y2), 255, 2)  # 白框，线宽2
 
     return img
-
 
 def generate_all_layouts(label_dir, output_dir, img_size=(512, 512)):
     """遍历标签文件夹，生成所有 layout 图像"""
