@@ -4,8 +4,8 @@ from collections import Counter
 from tqdm import tqdm
 
 # === 路径配置 ===
-YOLO_LABELS_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train/labels/"  # YOLO格式标签文件夹
-OUTPUT_JSONL_PATH = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train/prompt.json"
+YOLO_LABELS_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-val/labels/"  # YOLO格式标签文件夹
+OUTPUT_JSONL_PATH = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-val/prompt.json"
 IMAGES_RELATIVE_DIR = "images"  # 训练时图片相对路径
 
 # VisDrone 类别

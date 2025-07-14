@@ -4,8 +4,8 @@ from collections import Counter
 from tqdm import tqdm
 
 # === 路径配置 ===
-YOLO_LABELS_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-train/labels/"
-OUTPUT_JSONL_PATH = "/content/drive/MyDrive/VOC2012/VOC2012-train/prompt.json"
+YOLO_LABELS_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-val/labels/"
+OUTPUT_JSONL_PATH = "/content/drive/MyDrive/VOC2012/VOC2012-val/prompt.json"
 IMAGES_RELATIVE_DIR = "images"  # 这里是相对路径，训练脚本会用这个路径找到图片
 
 VOC_CLASSES = [
