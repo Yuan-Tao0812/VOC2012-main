@@ -2,60 +2,83 @@ import os
 import json
 from PIL import Image
 from tqdm import tqdm
+
 import torch
-
-from diffusers import StableDiffusionPipeline
-from peft import LoraConfig, get_peft_model
-from transformers import TrainingArguments
-from peft.trainer import PeftTrainer
 from torch.utils.data import Dataset
+from transformers import TrainingArguments
 
-# ====== 数据路径配置 ======
-DATA_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train/"
-OUTPUT_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/trained_lora/"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, AutoencoderKL, UNet2DConditionModel, DDPMScheduler
+from diffusers.utils import load_image, make_image_grid
+from peft import get_peft_model, LoraConfig
+from peft.trainer import PeftTrainer
 
-# ====== 加载 prompt.jsonl 数据集 ======
-class PromptDataset(Dataset):
-    def __init__(self, data_dir, jsonl_file, feature_extractor):
-        self.data_dir = data_dir
-        with open(os.path.join(data_dir, jsonl_file), 'r') as f:
-            lines = f.readlines()
-        self.items = [json.loads(line.strip()) for line in lines]
+
+# ==== 1. 数据集定义 ====
+class ControlNetDataset(Dataset):
+    def __init__(self, jsonl_path, root_dir, feature_extractor):
+        with open(jsonl_path, 'r') as f:
+            self.entries = [json.loads(line.strip()) for line in f]
+        self.root = root_dir
         self.feature_extractor = feature_extractor
 
     def __len__(self):
-        return len(self.items)
+        return len(self.entries)
 
     def __getitem__(self, idx):
-        item = self.items[idx]
-        image_path = os.path.join(self.data_dir, item["image_path"])
+        item = self.entries[idx]
+        image_path = os.path.join(self.root, item["image_path"])
+        control_path = os.path.join(self.root, item["layout_path"])
+        prompt = item["prompt"]
+
         image = Image.open(image_path).convert("RGB").resize((512, 512))
-        pixel_values = self.feature_extractor(images=image, return_tensors="pt").pixel_values[0]
+        control = Image.open(control_path).convert("RGB").resize((512, 512))
+
+        image_tensor = self.feature_extractor(image, return_tensors="pt").pixel_values[0]
+        control_tensor = self.feature_extractor(control, return_tensors="pt").pixel_values[0]
+
         return {
-            "pixel_values": pixel_values,
-            "prompt": item["prompt"]
+            "pixel_values": image_tensor,
+            "control_image": control_tensor,
+            "prompt": prompt
         }
 
-# ====== 加载 Stable Diffusion 模型 ======
-model_id = "stabilityai/stable-diffusion-2-1-base"
-pipe = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=torch.float16)
-pipe.to("cuda")
 
-# ====== 构建数据集 ======
-dataset = PromptDataset(DATA_DIR, "prompt.jsonl", pipe.feature_extractor)
+# ==== 2. 路径配置 ====
+DATA_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train/"
+OUTPUT_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/trained_lora/"
+JSONL_PATH = os.path.join(DATA_DIR, "prompt.jsonl")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ====== 配置 LoRA 参数 ======
+
+# ==== 3. 加载模型（Stable Diffusion + ControlNet 空模型） ====
+base_model_id = "stable-diffusion-v1-5/stable-diffusion-v1-5"
+controlnet = ControlNetModel.from_unet(Unet2DConditionModel.from_pretrained(base_model_id, subfolder="unet"))
+vae = AutoencoderKL.from_pretrained(base_model_id, subfolder="vae")
+
+pipe = StableDiffusionControlNetPipeline.from_pretrained(
+    base_model_id,
+    controlnet=controlnet,
+    vae=vae,
+    torch_dtype=torch.float16
+).to("cuda")
+
+
+# ==== 4. 构建数据集 ====
+dataset = ControlNetDataset(JSONL_PATH, DATA_DIR, pipe.feature_extractor)
+
+
+# ==== 5. LoRA 参数 ====
 lora_config = LoraConfig(
     r=8,
     lora_alpha=16,
-    target_modules=["q_proj", "v_proj"],  # 兼容 PEFT 的模块名
     lora_dropout=0.1,
     bias="none",
+    target_modules=["to_k", "to_q", "to_v", "to_out.0"],  # 适配 UNet + ControlNet
     task_type="TEXT_TO_IMAGE"
 )
 
-# ====== 训练参数 ======
+
+# ==== 6. 训练参数 ====
 training_args = TrainingArguments(
     per_device_train_batch_size=1,
     gradient_accumulation_steps=2,
@@ -69,12 +92,13 @@ training_args = TrainingArguments(
     report_to="none"
 )
 
-# ====== 启动训练 LoRA（只微调 UNet） ======
+
+# ==== 7. 构建 LoRA Trainer ====
 trainer = PeftTrainer(
     model=pipe.unet,
     args=training_args,
     train_dataset=dataset,
-    peft_config=lora_config,
+    peft_config=lora_config
 )
 
 trainer.train()

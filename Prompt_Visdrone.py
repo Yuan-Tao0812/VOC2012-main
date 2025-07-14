@@ -4,9 +4,10 @@ from collections import Counter
 from tqdm import tqdm
 
 # === 路径配置 ===
-YOLO_LABELS_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-val/labels/"  # YOLO格式标签文件夹
-OUTPUT_JSONL_PATH = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-val/prompt.json"
-IMAGES_RELATIVE_DIR = "images"  # 训练时图片相对路径
+YOLO_LABELS_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train/labels/"  # YOLO格式标签文件夹
+OUTPUT_JSONL_PATH = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train/prompt.jsonl"
+IMAGES_RELATIVE_DIR = "images"    # 图片相对路径
+LAYOUTS_RELATIVE_DIR = "layouts"  # layout图相对路径
 
 # VisDrone 类别
 VISDRONE_CLASSES = [
@@ -55,11 +56,12 @@ def generate_prompt_lines(yolo_dir, output_path):
 
             line_obj = {
                 "image_path": f"{IMAGES_RELATIVE_DIR}/{image_id}.jpg",
+                "layout_path": f"{LAYOUTS_RELATIVE_DIR}/{image_id}.png",
                 "prompt": prompt
             }
             out_file.write(json.dumps(line_obj, ensure_ascii=False) + "\n")
 
-    print(f"Saved prompt lines to {output_path}")
+    print(f"✅ Saved prompt lines with layout_path to {output_path}")
 
 if __name__ == "__main__":
     generate_prompt_lines(YOLO_LABELS_DIR, OUTPUT_JSONL_PATH)
