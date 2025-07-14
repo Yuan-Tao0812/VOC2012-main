@@ -124,7 +124,7 @@ for epoch in range(EPOCHS):
         outputs = pipe(
             images=image_tensors,
             timesteps=timesteps,
-            encoder_hidden_states=encoder_hidden_states,
+            prompt_embeds=encoder_hidden_states,
             controlnet_conditioning_image=layout_tensors,
             return_dict=True,
         )
