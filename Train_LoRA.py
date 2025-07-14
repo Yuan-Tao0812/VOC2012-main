@@ -121,15 +121,27 @@ for epoch in range(EPOCHS):
         noise = torch.randn_like(image_tensors).to(DEVICE)
         timesteps = torch.randint(0, pipe.scheduler.num_train_timesteps, (BATCH_SIZE,), device=DEVICE).long()
 
-        outputs = pipe(
-            image=image_tensors,
-            timesteps=timesteps,
-            prompt_embeds=encoder_hidden_states,
-            controlnet_conditioning_image=layout_tensors,
+        # Step 1: 控制分支（ControlNet）输出残差信息
+        controlnet_output = pipe.controlnet(
+            sample=image_tensors,
+            timestep=timesteps,
+            encoder_hidden_states=encoder_hidden_states,
+            controlnet_cond=layout_tensors,
             return_dict=True,
         )
 
-        noise_pred = outputs.sample
+        # Step 2: 把 ControlNet 的 residual 输入到 UNet
+        unet_output = pipe.unet(
+            sample=image_tensors,
+            timestep=timesteps,
+            encoder_hidden_states=encoder_hidden_states,
+            down_block_additional_residuals=controlnet_output.down_block_res_samples,
+            mid_block_additional_residual=controlnet_output.mid_block_res_sample,
+            return_dict=True,
+        )
+
+        # Step 3: 输出预测噪声，用于损失计算
+        noise_pred = unet_output.sample
 
         loss = nn.MSELoss()(noise_pred, noise)
         loss.backward()
