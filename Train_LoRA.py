@@ -111,11 +111,9 @@ for epoch in range(EPOCHS):
     for batch in loop:
         optimizer.zero_grad()
 
-        images = [img for img in batch["image"]]
-        layouts = [lay for lay in batch["layout"]]
 
-        image_tensors = pipe.feature_extractor(images=images, return_tensors="pt").pixel_values.to(DEVICE)
-        layout_tensors = pipe.feature_extractor(images=layouts, return_tensors="pt").pixel_values.to(DEVICE)
+        image_tensors = batch["image"].to(DEVICE)
+        layout_tensors = batch["layout"].to(DEVICE)
 
         input_ids = batch["input_ids"].to(DEVICE)
         attention_mask = batch["attention_mask"].to(DEVICE)
