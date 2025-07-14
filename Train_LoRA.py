@@ -118,19 +118,26 @@ for epoch in range(EPOCHS):
         attention_mask = batch["attention_mask"].to(DEVICE)
         encoder_hidden_states = text_encoder(input_ids=input_ids, attention_mask=attention_mask)[0]
 
-        noise = torch.randn_like(image_tensors).to(DEVICE)
-        timesteps = torch.randint(0, pipe.scheduler.num_train_timesteps, (BATCH_SIZE,), device=DEVICE).long()
+        # ✅ Step 1: 将图像编码为 latent 空间
+        latents = pipe.vae.encode(image_tensors).latent_dist.sample()
+        latents = latents * pipe.vae.config.scaling_factor  # 非常关键！别忘了缩放
+        latents = latents.to(dtype=pipe.unet.dtype, device=pipe.device)
 
-        dtype = pipe.unet.dtype
-        device = pipe.device
-        timesteps = timesteps.to(device=device, dtype=dtype)
-        image_tensors = image_tensors.to(device=device, dtype=dtype)
-        encoder_hidden_states = encoder_hidden_states.to(device=device, dtype=dtype)
-        layout_tensors = layout_tensors.to(device=device, dtype=dtype)
+        # ✅ Step 2: 准备 timestep 和噪声
+        noise = torch.randn_like(latents)
+        timesteps = torch.randint(0, pipe.scheduler.config.num_train_timesteps, (latents.shape[0],),
+                                  device=latents.device).long()
+
+        # ✅ Step 3: 给 latent 加噪声
+        noisy_latents = pipe.scheduler.add_noise(latents, noise, timesteps)
+
+        # ✅ Step 4: 准备 ControlNet 输入（layout 通道需要匹配）
+        layout_tensors = layout_tensors.to(dtype=pipe.unet.dtype, device=pipe.device)
+        encoder_hidden_states = encoder_hidden_states.to(dtype=pipe.unet.dtype, device=pipe.device)
 
         # Step 1: 控制分支（ControlNet）输出残差信息
         controlnet_output = pipe.controlnet(
-            sample=image_tensors,
+            sample=noisy_latents,
             timestep=timesteps,
             encoder_hidden_states=encoder_hidden_states,
             controlnet_cond=layout_tensors,
@@ -139,7 +146,7 @@ for epoch in range(EPOCHS):
 
         # Step 2: 把 ControlNet 的 residual 输入到 UNet
         unet_output = pipe.unet(
-            sample=image_tensors,
+            sample=noisy_latents,
             timestep=timesteps,
             encoder_hidden_states=encoder_hidden_states,
             down_block_additional_residuals=controlnet_output.down_block_res_samples,
