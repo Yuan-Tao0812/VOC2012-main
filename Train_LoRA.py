@@ -111,7 +111,6 @@ for epoch in range(EPOCHS):
     for batch in loop:
         optimizer.zero_grad()
 
-
         image_tensors = batch["image"].to(DEVICE)
         layout_tensors = batch["layout"].to(DEVICE)
 
