@@ -118,21 +118,21 @@ for epoch in range(EPOCHS):
         attention_mask = batch["attention_mask"].to(DEVICE)
         encoder_hidden_states = text_encoder(input_ids=input_ids, attention_mask=attention_mask)[0]
 
-        # ✅ Step 1: 将图像编码为 latent 空间
-        image_tensors = image_tensors.to(device=pipe.device, dtype=pipe.vae.dtype)
+        # Step 1: 将图像编码为 latent 空间
+        image_tensors = image_tensors.to(device=pipe.vae.device, dtype=pipe.vae.dtype)
         latents = pipe.vae.encode(image_tensors).latent_dist.sample()
         latents = latents * pipe.vae.config.scaling_factor  # 非常关键！别忘了缩放
         latents = latents.to(dtype=pipe.unet.dtype, device=pipe.device)
 
-        # ✅ Step 2: 准备 timestep 和噪声
+        # Step 2: 准备 timestep 和噪声
         noise = torch.randn_like(latents)
         timesteps = torch.randint(0, pipe.scheduler.config.num_train_timesteps, (latents.shape[0],),
                                   device=latents.device).long()
 
-        # ✅ Step 3: 给 latent 加噪声
+        # Step 3: 给 latent 加噪声
         noisy_latents = pipe.scheduler.add_noise(latents, noise, timesteps)
 
-        # ✅ Step 4: 准备 ControlNet 输入（layout 通道需要匹配）
+        # Step 4: 准备 ControlNet 输入（layout 通道需要匹配）
         layout_tensors = layout_tensors.to(dtype=pipe.unet.dtype, device=pipe.device)
         encoder_hidden_states = encoder_hidden_states.to(dtype=pipe.unet.dtype, device=pipe.device)
 
