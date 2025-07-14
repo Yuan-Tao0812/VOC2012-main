@@ -7,7 +7,7 @@ import torch
 from torch import nn, optim
 from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
-from diffusers import LoRAAttnProcessor, LoRAAttnProcessor2_0  # ✅ diffusers 内置 LoRA
+from diffusers.models.attention_processor import LoRAAttnProcessor
 
 
 # === 配置 ===
