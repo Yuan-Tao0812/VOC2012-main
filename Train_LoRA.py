@@ -121,6 +121,13 @@ for epoch in range(EPOCHS):
         noise = torch.randn_like(image_tensors).to(DEVICE)
         timesteps = torch.randint(0, pipe.scheduler.num_train_timesteps, (BATCH_SIZE,), device=DEVICE).long()
 
+        dtype = pipe.unet.dtype
+        device = pipe.device
+        timesteps = timesteps.to(device=device, dtype=dtype)
+        image_tensors = image_tensors.to(device=device, dtype=dtype)
+        encoder_hidden_states = encoder_hidden_states.to(device=device, dtype=dtype)
+        layout_tensors = layout_tensors.to(device=device, dtype=dtype)
+
         # Step 1: 控制分支（ControlNet）输出残差信息
         controlnet_output = pipe.controlnet(
             sample=image_tensors,
