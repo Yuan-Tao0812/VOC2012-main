@@ -36,6 +36,9 @@ pipe = StableDiffusionControlNetPipeline.from_pretrained(
 )
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 pipe = pipe.to(DEVICE)
+print("unet device:", next(pipe.unet.parameters()).device)
+print("vae device:", next(pipe.vae.parameters()).device)
+print("text_encoder device:", next(pipe.text_encoder.parameters()).device)
 pipe.enable_model_cpu_offload()
 
 # === 注入 LoRA 注意力处理器 ===
@@ -125,6 +128,8 @@ optimizer = torch.optim.AdamW(
     list(pipe.text_encoder.parameters()),
     lr=LR,
 )
+
+pipe.unet.to(DEVICE)
 
 # === 训练循环 ===
 for epoch in range(EPOCHS):
