@@ -53,12 +53,7 @@ for param in pipe.unet.parameters():
     param.requires_grad = False
 for param in pipe.controlnet.parameters():
     param.requires_grad = False
-for name, submodule in pipe.unet.attn_processors.items():
-    for param in submodule.parameters():
-        param.requires_grad = True
-for name, submodule in pipe.controlnet.attn_processors.items():
-    for param in submodule.parameters():
-        param.requires_grad = True
+
 
 pipe.text_encoder.train()
 for param in pipe.text_encoder.parameters():
@@ -114,12 +109,20 @@ dataset = VisDroneControlNetDataset(DATA_DIR, PROMPT_FILE, tokenizer)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 # === 优化器（只训练 LoRA 和 text_encoder） ===
+def get_lora_parameters(attn_processors):
+    params = []
+    for proc in attn_processors.values():
+        if isinstance(proc, LoRAAttnProcessor):
+            params.extend(proc.parameters())
+    return params
+
 optimizer = torch.optim.AdamW(
-    list(pipe.unet.attn_processors.parameters()) +
-    list(pipe.controlnet.attn_processors.parameters()) +
+    get_lora_parameters(pipe.unet.attn_processors) +
+    get_lora_parameters(pipe.controlnet.attn_processors) +
     list(pipe.text_encoder.parameters()),
     lr=LR,
 )
+
 
 # === 训练循环 ===
 for epoch in range(EPOCHS):
