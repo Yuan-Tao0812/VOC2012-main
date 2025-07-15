@@ -108,23 +108,27 @@ class VisDroneControlNetDataset(Dataset):
 dataset = VisDroneControlNetDataset(DATA_DIR, PROMPT_FILE, tokenizer)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True, prefetch_factor=2)
 
-def get_attn_proc_state_dict(attn_proc):
-    state_dict = {}
-    # 试图收集可能的子module参数
-    for name, module in attn_proc.named_children():
-        state_dict[name] = module.state_dict()
-    return state_dict
-
 def save_lora_attn_processors(pipe, output_dir, step=None):
     step_str = f"_step_{step}" if step is not None else ""
 
-    unet_sd = {k: get_attn_proc_state_dict(v) for k, v in pipe.unet.attn_processors.items()}
-    torch.save(unet_sd, os.path.join(output_dir, f"unet_lora{step_str}.pt"))
+    def extract_lora_weights(attn_processors):
+        lora_state_dict = {}
+        for name, proc in attn_processors.items():
+            if isinstance(proc, (LoRAAttnProcessor, LoRAAttnProcessor2_0)):
+                # 提取 lora_up 和 lora_down 的权重
+                lora_state_dict[f"{name}.lora_up"] = proc.lora_up.state_dict()
+                lora_state_dict[f"{name}.lora_down"] = proc.lora_down.state_dict()
+                if hasattr(proc, "alpha"):
+                    lora_state_dict[f"{name}.alpha"] = proc.alpha
+        return lora_state_dict
 
-    controlnet_sd = {k: get_attn_proc_state_dict(v) for k, v in pipe.controlnet.attn_processors.items()}
-    torch.save(controlnet_sd, os.path.join(output_dir, f"controlnet_lora{step_str}.pt"))
+    # 保存 UNet LoRA
+    unet_lora = extract_lora_weights(pipe.unet.attn_processors)
+    torch.save(unet_lora, os.path.join(output_dir, f"unet_lora{step_str}.pt"))
 
-    print(f"LoRA{step_str} weights saved")
+    # 保存 ControlNet LoRA
+    controlnet_lora = extract_lora_weights(pipe.controlnet.attn_processors)
+    torch.save(controlnet_lora, os.path.join(output_dir, f"controlnet_lora{step_str}.pt"))
 
 # === 优化器（只训练 LoRA 和 text_encoder） ===
 def get_lora_parameters(attn_procs):
@@ -204,14 +208,15 @@ for epoch in range(EPOCHS):
                                        list(pipe.text_encoder.parameters()), max_norm=1.0)
         optimizer.step()
         loop.set_postfix(loss=loss.item())
-        # 定期保存checkpoint
+        # 每500步保存一次 checkpoint
         if global_step % 500 == 0 and global_step > 0:
             save_lora_attn_processors(pipe, OUTPUT_DIR, step=global_step)
             pipe.text_encoder.save_pretrained(os.path.join(OUTPUT_DIR, f"text_encoder_step_{global_step}"))
             torch.save(optimizer.state_dict(), os.path.join(OUTPUT_DIR, f"optimizer_step_{global_step}.pt"))
+            print(f"✅ 保存 step {global_step} 的权重完成。")
 
-# 保存模型LoRA权重和文本编码器
+# 训练结束，保存最终模型
 save_lora_attn_processors(pipe, OUTPUT_DIR)
 pipe.text_encoder.save_pretrained(os.path.join(OUTPUT_DIR, "text_encoder"))
 torch.save(optimizer.state_dict(), os.path.join(OUTPUT_DIR, "optimizer.pt"))
-print("训练完成，模型保存完毕。")
+print("✅ 训练完成，最终模型已保存。")
