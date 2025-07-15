@@ -209,10 +209,12 @@ for epoch in range(EPOCHS):
         optimizer.step()
         loop.set_postfix(loss=loss.item())
         # 每500步保存一次 checkpoint
-        if global_step % 500 == 0 and global_step > 0:
-            save_lora_attn_processors(pipe, OUTPUT_DIR, step=global_step)
-            pipe.text_encoder.save_pretrained(os.path.join(OUTPUT_DIR, f"text_encoder_step_{global_step}"))
-            torch.save(optimizer.state_dict(), os.path.join(OUTPUT_DIR, f"optimizer_step_{global_step}.pt"))
+        if global_step % 50 == 0 and global_step > 0:
+            # save_lora_attn_processors(pipe, CHECKPOINT_DIR, step=global_step)
+            pipe.unet.save_pretrained(os.path.join(CHECKPOINT_DIR, f"unet_step_{global_step}"))
+            pipe.controlnet.save_pretrained(os.path.join(CHECKPOINT_DIR, f"controlnet_step_{global_step}"))
+            pipe.text_encoder.save_pretrained(os.path.join(CHECKPOINT_DIR, f"text_encoder_step_{global_step}"))
+            torch.save(optimizer.state_dict(), os.path.join(CHECKPOINT_DIR, f"optimizer_step_{global_step}.pt"))
             print(f"✅ 保存 step {global_step} 的权重完成。")
 
 # 训练结束，保存最终模型
