@@ -31,12 +31,12 @@ global_step = 0
 
 # === 加载 ControlNet 和 Pipeline ===
 controlnet = ControlNetModel.from_pretrained(
-    "lllyasviel/control_v11p_sd15_scribble", torch_dtype=torch.float32
+    "lllyasviel/control_v11p_sd15_scribble", torch_dtype=torch.float16
 )
 pipe = StableDiffusionControlNetPipeline.from_pretrained(
     "stable-diffusion-v1-5/stable-diffusion-v1-5",
     controlnet=controlnet,
-    torch_dtype=torch.float32,
+    torch_dtype=torch.float16,
 )
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 pipe = pipe.to(DEVICE)
@@ -47,12 +47,6 @@ for name in pipe.unet.attn_processors.keys():
 
 for name in pipe.controlnet.attn_processors.keys():
     pipe.controlnet.attn_processors[name] = LoRAAttnProcessor()
-    print("🔍 type(pipe.unet.attn_processors):", type(pipe.unet.attn_processors))
-    print("🔑 Keys in attn_processors:", list(pipe.unet.attn_processors.keys()))
-
-    # 随便挑一个 key 查看内容
-    sample_key = list(pipe.unet.attn_processors.keys())[0]
-    print(f"🔎 Type of processor at '{sample_key}':", type(pipe.unet.attn_processors[sample_key]))
 
 # 设置可训练参数，只训练 LoRA 层和文本编码器
 for param in pipe.unet.parameters():
@@ -111,7 +105,7 @@ class VisDroneControlNetDataset(Dataset):
         }
 
 dataset = VisDroneControlNetDataset(DATA_DIR, PROMPT_FILE, tokenizer)
-dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
 
 # === 优化器（只训练 LoRA 和 text_encoder） ===
 def get_lora_parameters(attn_procs):
@@ -141,18 +135,18 @@ for epoch in range(EPOCHS):
         optimizer.zero_grad()
 
         # 移动数据到设备
-        image = batch["image"].to(DEVICE, dtype=torch.float32)
-        layout = batch["layout"].to(DEVICE, dtype=torch.float32)
+        image = batch["image"].to(DEVICE, dtype=torch.float16)
+        layout = batch["layout"].to(DEVICE, dtype=torch.float16)
         input_ids = batch["input_ids"].to(DEVICE)
         attention_mask = batch["attention_mask"].to(DEVICE)
 
         # 编码文本
-        encoder_hidden_states = pipe.text_encoder(input_ids=input_ids, attention_mask=attention_mask)[0].to(dtype=torch.float32).to(DEVICE)
+        encoder_hidden_states = pipe.text_encoder(input_ids=input_ids, attention_mask=attention_mask)[0].to(dtype=torch.float16).to(DEVICE)
 
         # 编码图像至latent
         latents = pipe.vae.encode(image).latent_dist.sample().to(DEVICE)
         latents = latents * pipe.vae.config.scaling_factor
-        latents = latents.to(dtype=torch.float32)
+        latents = latents.to(dtype=torch.float16)
 
         # 采样随机时间步
         timesteps = torch.randint(0, pipe.scheduler.config.num_train_timesteps, (latents.shape[0],), device=DEVICE).long()
