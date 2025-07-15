@@ -32,8 +32,23 @@ pipe = StableDiffusionControlNetPipeline.from_pretrained(
 pipe.enable_model_cpu_offload()  # 节省显存
 
 # === 注入 LoRA（diffusers 自带）
-pipe.unet.set_attn_processor(LoRAAttnProcessor2_0())  # unet注入LoRA模块
-pipe.controlnet.set_attn_processor(LoRAAttnProcessor2_0())  # controlnet注入LoRA模块
+class LoRAAttnProcessor2_0(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # 这里可以初始化你需要的LoRA参数，比如低秩矩阵等
+        # self.lora_A = ...
+        # self.lora_B = ...
+
+    def forward(self, hidden_states, **kwargs):
+        # 这里写attention处理的逻辑，示例简单返回hidden_states
+        return hidden_states
+
+    # 重点：加上 __call__ 方法，调用时其实就是调用forward
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+processor = LoRAAttnProcessor2_0()
+pipe.unet.set_attn_processor(processor)  # unet注入LoRA模块
+pipe.controlnet.set_attn_processor(processor)  # controlnet注入LoRA模块
 
 # 设置可训练参数
 for module in [pipe.unet, pipe.controlnet]:
