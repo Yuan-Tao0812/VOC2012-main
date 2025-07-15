@@ -39,14 +39,17 @@ pipe = pipe.to(DEVICE)
 pipe.enable_model_cpu_offload()
 
 # === 注入 LoRA 注意力处理器 ===
-def inject_lora(model):
-    attn_processors = {
-        name: LoRAAttnProcessor() for name in model.attn_processors.keys()
-    }
-    model.set_attn_processor(attn_processors)
+for name in pipe.unet.attn_processors.keys():
+    pipe.unet.attn_processors[name] = LoRAAttnProcessor()
 
-inject_lora(pipe.unet)
-inject_lora(pipe.controlnet)
+for name in pipe.controlnet.attn_processors.keys():
+    pipe.controlnet.attn_processors[name] = LoRAAttnProcessor()
+    print("🔍 type(pipe.unet.attn_processors):", type(pipe.unet.attn_processors))
+    print("🔑 Keys in attn_processors:", list(pipe.unet.attn_processors.keys()))
+
+    # 随便挑一个 key 查看内容
+    sample_key = list(pipe.unet.attn_processors.keys())[0]
+    print(f"🔎 Type of processor at '{sample_key}':", type(pipe.unet.attn_processors[sample_key]))
 
 # 设置可训练参数，只训练 LoRA 层和文本编码器
 for param in pipe.unet.parameters():
@@ -112,15 +115,14 @@ dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 def get_lora_parameters(attn_processors):
     params = []
     for proc in attn_processors.values():
-        if isinstance(proc, LoRAAttnProcessor):
-            params.extend(proc.parameters())
+        params.extend(proc.parameters())
     return params
 
 optimizer = torch.optim.AdamW(
-    list(pipe.unet.get_attn_procs().parameters()) +
-    list(pipe.controlnet.get_attn_procs().parameters()) +
+    get_lora_parameters(pipe.unet.attn_processors) +
+    get_lora_parameters(pipe.controlnet.attn_processors) +
     list(pipe.text_encoder.parameters()),
-    lr=LR,
+    lr=LR
 )
 
 # === 训练循环 ===
