@@ -146,13 +146,16 @@ for epoch in range(EPOCHS):
         encoder_hidden_states = pipe.text_encoder(input_ids=input_ids, attention_mask=attention_mask)[0].to(dtype=torch.float16).to(DEVICE)
 
         # 编码图像至latent
-        print(f"image.shape before VAE: {image.shape}")
-        if image.dim() == 3:
-            image = image.unsqueeze(0)  # ensure [1, C, H, W]
-        print(f"image.shape before VAE: {image.shape}")
         latents = pipe.vae.encode(image).latent_dist.sample().to(DEVICE)
         latents = latents * pipe.vae.config.scaling_factor
         latents = latents.to(dtype=torch.float16)
+
+        print("pipe device:", next(pipe.parameters()).device)
+        print("image device:", image.device)
+        print("layout device:", layout.device)
+        print("latents device:", latents.device)
+        print("encoder_hidden_states device:", encoder_hidden_states.device)
+        print("controlnet_cond device:", layout.device)  # 你传给controlnet的cond
 
         # 采样随机时间步
         timesteps = torch.randint(0, pipe.scheduler.config.num_train_timesteps, (latents.shape[0],), device=DEVICE).long()
@@ -160,14 +163,6 @@ for epoch in range(EPOCHS):
         # 添加噪声
         noise = torch.randn_like(latents).to(DEVICE)
         noisy_latents = pipe.scheduler.add_noise(latents, noise, timesteps)
-
-        # ControlNet 条件输入
-        if layout.dim() == 5:
-            layout = layout.squeeze(0)
-        elif layout.dim() == 3:
-            layout = layout.unsqueeze(0)
-
-        print(f"layout shape before ControlNet: {layout.shape}")  # 应该是 [B, 3, H, W]
 
         # ControlNet前向
         controlnet_out = pipe.controlnet(
