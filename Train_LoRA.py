@@ -29,6 +29,7 @@ IMAGE_SIZE = 512
 SAVE_EVERY_N_STEPS = 500  # 每多少步保存一次
 global_step = 0
 
+
 # === 加载 ControlNet 和 Pipeline ===
 controlnet = ControlNetModel.from_pretrained(
     "lllyasviel/control_v11p_sd15_scribble", torch_dtype=torch.float32
