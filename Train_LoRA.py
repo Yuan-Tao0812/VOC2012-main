@@ -17,6 +17,8 @@ DATA_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train/"
 PROMPT_FILE = "prompt.jsonl"
 OUTPUT_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/trained_lora_controlnet/"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+CHECKPOINT_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/checkpoints"
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 1
@@ -24,6 +26,8 @@ EPOCHS = 50
 LR = 1e-4
 MAX_TOKEN_LENGTH = 77
 IMAGE_SIZE = 512
+SAVE_EVERY_N_STEPS = 500  # 每多少步保存一次
+global_step = 0
 
 # === 加载 ControlNet 和 Pipeline ===
 controlnet = ControlNetModel.from_pretrained(
@@ -133,6 +137,7 @@ for epoch in range(EPOCHS):
 
     loop = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{EPOCHS}")
     for batch in loop:
+        global_step +=1
         optimizer.zero_grad()
 
         # 移动数据到设备
@@ -180,14 +185,21 @@ for epoch in range(EPOCHS):
 
         # 计算损失
         loss = torch.nn.functional.mse_loss(noise_pred, noise)
-
         loss.backward()
         torch.nn.utils.clip_grad_norm_(list(pipe.unet.parameters()) +
                                        list(pipe.controlnet.parameters()) +
                                        list(pipe.text_encoder.parameters()), max_norm=1.0)
         optimizer.step()
-
         loop.set_postfix(loss=loss.item())
+        # 定期保存checkpoint
+        if global_step % SAVE_EVERY_N_STEPS == 0:
+            print(f"\nSaving checkpoint at step {global_step}...")
+            pipe.unet.save_attn_procs(os.path.join(CHECKPOINT_DIR, f"unet_lora_step_{global_step}"))
+            pipe.controlnet.save_attn_procs(os.path.join(CHECKPOINT_DIR, f"controlnet_lora_step_{global_step}"))
+            pipe.text_encoder.save_pretrained(os.path.join(CHECKPOINT_DIR, f"text_encoder_step_{global_step}"))
+
+            # 还可以保存优化器状态
+            torch.save(optimizer.state_dict(), os.path.join(CHECKPOINT_DIR, f"optimizer_step_{global_step}.pt"))
 
 # 保存模型LoRA权重和文本编码器
 pipe.unet.save_attn_procs(os.path.join(OUTPUT_DIR, "unet_lora"))
