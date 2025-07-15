@@ -6,8 +6,8 @@ from tqdm import tqdm
 import torch
 from torch import nn, optim
 from transformers import CLIPTextModel, CLIPTokenizer
-from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
-from diffusers.models.attention_processor import LoRAAttnProcessor2_0
+from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, AttnProcsLayers
+from diffusers.models.attention_processor import LoRAAttnProcessor
 
 
 # === 配置 ===
@@ -32,30 +32,22 @@ pipe = StableDiffusionControlNetPipeline.from_pretrained(
 pipe.enable_model_cpu_offload()  # 节省显存
 
 # === 注入 LoRA（diffusers 自带）
-class LoRAAttnProcessor2_0(nn.Module):
-    def __init__(self):
-        super().__init__()
-        # 这里可以初始化你需要的LoRA参数，比如低秩矩阵等
-        # self.lora_A = ...
-        # self.lora_B = ...
+# LoRA注入unet
+pipe.unet.set_attn_processor({
+    name: LoRAAttnProcessor() for name in pipe.unet.attn_processors.keys()
+})
 
-    def forward(self, hidden_states, **kwargs):
-        # 这里写attention处理的逻辑，示例简单返回hidden_states
-        return hidden_states
-
-    # 重点：加上 __call__ 方法，调用时其实就是调用forward
-    def __call__(self, *args, **kwargs):
-        return self.forward(*args, **kwargs)
-processor = LoRAAttnProcessor2_0()
-pipe.unet.set_attn_processor(processor)  # unet注入LoRA模块
-pipe.controlnet.set_attn_processor(processor)  # controlnet注入LoRA模块
+# LoRA注入controlnet
+pipe.controlnet.set_attn_processor({
+    name: LoRAAttnProcessor() for name in pipe.controlnet.attn_processors.keys()
+})
 
 # 设置可训练参数
 for module in [pipe.unet, pipe.controlnet]:
-    for name, submodule in module.named_modules():
-        if isinstance(submodule, LoRAAttnProcessor2_0):
-            for param in submodule.parameters():
-                param.requires_grad = True
+    for submodule in module.attn_processors.values():
+        for param in submodule.parameters():
+            param.requires_grad = True
+
 
 pipe.unet.train()
 pipe.controlnet.train()
@@ -110,11 +102,12 @@ dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 # === 优化器（只训练 LoRA 和文本编码器）
 optimizer = optim.AdamW(
-    list(filter(lambda p: p.requires_grad, pipe.unet.parameters())) +
-    list(filter(lambda p: p.requires_grad, pipe.controlnet.parameters())) +
+    list(pipe.unet.attn_processors.parameters()) +
+    list(pipe.controlnet.attn_processors.parameters()) +
     list(text_encoder.parameters()),
     lr=LR
 )
+
 
 # === 训练主循环 ===
 for epoch in range(EPOCHS):
