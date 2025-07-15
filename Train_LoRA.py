@@ -146,7 +146,10 @@ for epoch in range(EPOCHS):
         encoder_hidden_states = pipe.text_encoder(input_ids=input_ids, attention_mask=attention_mask)[0].to(dtype=torch.float16)
 
         # 编码图像至latent
-        latents = pipe.vae.encode(image.unsqueeze(0)).latent_dist.sample()  # [1,C,H,W]
+        if image.dim() == 3:
+            image = image.unsqueeze(0)  # ensure [1, C, H, W]
+        print(f"image.shape before VAE: {image.shape}")
+        latents = pipe.vae.encode(image).latent_dist.sample()
         latents = latents * pipe.vae.config.scaling_factor
         latents = latents.to(dtype=torch.float16)
 
