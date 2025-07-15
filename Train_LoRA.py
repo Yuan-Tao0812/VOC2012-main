@@ -150,7 +150,9 @@ for epoch in range(EPOCHS):
         latents = latents * pipe.vae.config.scaling_factor
         latents = latents.to(dtype=torch.float16)
 
-        print("pipe device:", next(pipe.parameters()).device)
+        print("unet device:", next(pipe.unet.parameters()).device)
+        print("vae device:", next(pipe.vae.parameters()).device)
+        print("text_encoder device:", next(pipe.text_encoder.parameters()).device)
         print("image device:", image.device)
         print("latents device:", latents.device)
         print("encoder_hidden_states device:", encoder_hidden_states.device)
