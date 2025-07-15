@@ -152,7 +152,6 @@ for epoch in range(EPOCHS):
 
         print("pipe device:", next(pipe.parameters()).device)
         print("image device:", image.device)
-        print("layout device:", layout.device)
         print("latents device:", latents.device)
         print("encoder_hidden_states device:", encoder_hidden_states.device)
         print("controlnet_cond device:", layout.device)  # 你传给controlnet的cond
