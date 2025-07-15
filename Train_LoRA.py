@@ -31,12 +31,12 @@ global_step = 0
 
 # === 加载 ControlNet 和 Pipeline ===
 controlnet = ControlNetModel.from_pretrained(
-    "lllyasviel/control_v11p_sd15_scribble", torch_dtype=torch.float16
+    "lllyasviel/control_v11p_sd15_scribble", torch_dtype=torch.float32
 )
 pipe = StableDiffusionControlNetPipeline.from_pretrained(
     "stable-diffusion-v1-5/stable-diffusion-v1-5",
     controlnet=controlnet,
-    torch_dtype=torch.float16,
+    torch_dtype=torch.float32,
 )
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 pipe = pipe.to(DEVICE)
@@ -135,18 +135,18 @@ for epoch in range(EPOCHS):
         optimizer.zero_grad()
 
         # 移动数据到设备
-        image = batch["image"].to(DEVICE, dtype=torch.float16)
-        layout = batch["layout"].to(DEVICE, dtype=torch.float16)
+        image = batch["image"].to(DEVICE, dtype=torch.float32)
+        layout = batch["layout"].to(DEVICE, dtype=torch.float32)
         input_ids = batch["input_ids"].to(DEVICE)
         attention_mask = batch["attention_mask"].to(DEVICE)
 
         # 编码文本
-        encoder_hidden_states = pipe.text_encoder(input_ids=input_ids, attention_mask=attention_mask)[0].to(dtype=torch.float16).to(DEVICE)
+        encoder_hidden_states = pipe.text_encoder(input_ids=input_ids, attention_mask=attention_mask)[0].to(dtype=torch.float32).to(DEVICE)
 
         # 编码图像至latent
         latents = pipe.vae.encode(image).latent_dist.sample().to(DEVICE)
         latents = latents * pipe.vae.config.scaling_factor
-        latents = latents.to(dtype=torch.float16)
+        latents = latents.to(dtype=torch.float32)
 
         # 采样随机时间步
         timesteps = torch.randint(0, pipe.scheduler.config.num_train_timesteps, (latents.shape[0],), device=DEVICE).long()
