@@ -36,7 +36,6 @@ pipe = StableDiffusionControlNetPipeline.from_pretrained(
 )
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 pipe = pipe.to(DEVICE)
-pipe.enable_model_cpu_offload()
 
 # === 注入 LoRA 注意力处理器 ===
 for name in pipe.unet.attn_processors.keys():
@@ -56,7 +55,6 @@ for param in pipe.unet.parameters():
     param.requires_grad = False
 for param in pipe.controlnet.parameters():
     param.requires_grad = False
-
 
 pipe.text_encoder.train()
 for param in pipe.text_encoder.parameters():
