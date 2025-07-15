@@ -125,10 +125,12 @@ optimizer = torch.optim.AdamW(
     list(pipe.text_encoder.parameters()),
     lr=LR,
 )
-
-
+print("unet device before loop:", next(pipe.unet.parameters()).device)
+pipe.unet.to(DEVICE)
+print("unet device before loop:", next(pipe.unet.parameters()).device)
 # === 训练循环 ===
 for epoch in range(EPOCHS):
+    print("unet device in loop:", next(pipe.unet.parameters()).device)
     pipe.unet.train()
     pipe.controlnet.train()
     pipe.text_encoder.train()
