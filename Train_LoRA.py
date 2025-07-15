@@ -43,11 +43,14 @@ pipe.controlnet.set_attn_processor({
 })
 
 # 设置可训练参数
-for module in [pipe.unet, pipe.controlnet]:
-    for submodule in module.attn_processors.values():
-        for param in submodule.parameters():
+def set_lora_trainable(module):
+    for child in module.children():
+        for param in child.parameters():
             param.requires_grad = True
 
+for module in [pipe.unet, pipe.controlnet]:
+    for processor in module.attn_processors.values():
+        set_lora_trainable(processor)
 
 pipe.unet.train()
 pipe.controlnet.train()
