@@ -108,6 +108,20 @@ class VisDroneControlNetDataset(Dataset):
 dataset = VisDroneControlNetDataset(DATA_DIR, PROMPT_FILE, tokenizer)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True, prefetch_factor=2)
 
+def save_lora_attn_processors(pipe, output_dir, step=None):
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 路径带步数方便断点续训
+    unet_path = os.path.join(output_dir, f"unet_lora_step_{step}.pt" if step is not None else "unet_lora.pt")
+    controlnet_path = os.path.join(output_dir,
+                                   f"controlnet_lora_step_{step}.pt" if step is not None else "controlnet_lora.pt")
+
+    # 统一保存 LoRA attn_processors 的 state_dict（keys 带前缀）
+    torch.save(pipe.unet.attn_processors.state_dict(), unet_path)
+    torch.save(pipe.controlnet.attn_processors.state_dict(), controlnet_path)
+
+    print(f"LoRA weights saved: {unet_path}, {controlnet_path}")
+
 # === 优化器（只训练 LoRA 和 text_encoder） ===
 def get_lora_parameters(attn_procs):
     params = []
@@ -187,18 +201,13 @@ for epoch in range(EPOCHS):
         optimizer.step()
         loop.set_postfix(loss=loss.item())
         # 定期保存checkpoint
-        if global_step % SAVE_EVERY_N_STEPS == 0:
-            print(f"\nSaving checkpoint at step {global_step}...")
-            unet_lora_path = os.path.join(CHECKPOINT_DIR, f"unet_lora_step_{global_step}")
-            pipe.unet.save_attn_processors(unet_lora_path)
-            controlnet_lora_path = os.path.join(CHECKPOINT_DIR, f"controlnet_lora_step_{global_step}")
-            pipe.controlnet.save_attn_processors(controlnet_lora_path)
-            pipe.text_encoder.save_pretrained(os.path.join(CHECKPOINT_DIR, f"text_encoder_step_{global_step}"))
-            torch.save(optimizer.state_dict(), os.path.join(CHECKPOINT_DIR, f"optimizer_step_{global_step}.pt"))
+        if global_step % 500 == 0 and global_step > 0:
+            save_lora_attn_processors(pipe, OUTPUT_DIR, step=global_step)
+            pipe.text_encoder.save_pretrained(os.path.join(OUTPUT_DIR, f"text_encoder_step_{global_step}"))
+            torch.save(optimizer.state_dict(), os.path.join(OUTPUT_DIR, f"optimizer_step_{global_step}.pt"))
 
 # 保存模型LoRA权重和文本编码器
-pipe.unet.save_attn_processors(os.path.join(OUTPUT_DIR, "unet_lora"))
-pipe.controlnet.save_attn_processors(os.path.join(OUTPUT_DIR, "controlnet_lora"))
+save_lora_attn_processors(pipe, OUTPUT_DIR)
 pipe.text_encoder.save_pretrained(os.path.join(OUTPUT_DIR, "text_encoder"))
-
+torch.save(optimizer.state_dict(), os.path.join(OUTPUT_DIR, "optimizer.pt"))
 print("训练完成，模型保存完毕。")
