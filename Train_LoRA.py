@@ -161,7 +161,12 @@ for epoch in range(EPOCHS):
         noisy_latents = pipe.scheduler.add_noise(latents, noise, timesteps)
 
         # ControlNet 条件输入
-        layout = layout.unsqueeze(0).to(dtype=torch.float16)
+        if layout.dim() == 5:
+            layout = layout.squeeze(0)
+        elif layout.dim() == 3:
+            layout = layout.unsqueeze(0)
+
+        print(f"layout shape before ControlNet: {layout.shape}")  # 应该是 [B, 3, H, W]
 
         # ControlNet前向
         controlnet_out = pipe.controlnet(
