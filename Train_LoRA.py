@@ -7,7 +7,7 @@ import torch
 from torch import nn, optim
 from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
-from diffusers.models.attention_processor import LoRAAttnProcessor
+from diffusers.models.attention_processor import LoRAAttnProcessor2_0
 
 
 # === 配置 ===
@@ -32,13 +32,13 @@ pipe = StableDiffusionControlNetPipeline.from_pretrained(
 pipe.enable_model_cpu_offload()  # 节省显存
 
 # === 注入 LoRA（diffusers 自带）
-pipe.unet.set_attn_processor(LoRAAttnProcessor())  # unet注入LoRA模块
-pipe.controlnet.set_attn_processor(LoRAAttnProcessor())  # controlnet注入LoRA模块
+pipe.unet.set_attn_processor(LoRAAttnProcessor2_0())  # unet注入LoRA模块
+pipe.controlnet.set_attn_processor(LoRAAttnProcessor2_0())  # controlnet注入LoRA模块
 
 # 设置可训练参数
 for module in [pipe.unet, pipe.controlnet]:
     for name, submodule in module.named_modules():
-        if isinstance(submodule, LoRAAttnProcessor):
+        if isinstance(submodule, LoRAAttnProcessor2_0):
             for param in submodule.parameters():
                 param.requires_grad = True
 
@@ -125,8 +125,7 @@ for epoch in range(EPOCHS):
         pipe.vae = pipe.vae.to(device=DEVICE, dtype=torch.float16)
         pipe.unet = pipe.unet.to(device=DEVICE, dtype=torch.float16)
         pipe.controlnet = pipe.controlnet.to(device=DEVICE, dtype=torch.float16)
-        print(f"[Debug] image_tensors: {image_tensors.device}, {image_tensors.dtype}")
-        print(f"[Debug] vae weight: {next(pipe.vae.parameters()).device}")
+
         # 确保 image_tensors 也在同一个设备和 dtype 上
         image_tensors = image_tensors.to(device=DEVICE, dtype=torch.float16)
         latents = pipe.vae.encode(image_tensors).latent_dist.sample()
