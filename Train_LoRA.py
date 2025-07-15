@@ -147,7 +147,7 @@ optimizer = torch.optim.AdamW(
 
 
 # === 训练循环 ===
-for epoch in range(EPOCHS):
+for epoch in range(1, EPOCHS+1):
     pipe.unet.train()
     pipe.controlnet.train()
     pipe.text_encoder.train()
@@ -208,17 +208,16 @@ for epoch in range(EPOCHS):
                                        list(pipe.text_encoder.parameters()), max_norm=1.0)
         optimizer.step()
         loop.set_postfix(loss=loss.item())
-        # 每500步保存一次 checkpoint
-        if global_step % 50 == 0 and global_step > 0:
-            # save_lora_attn_processors(pipe, CHECKPOINT_DIR, step=global_step)
-            pipe.unet.save_pretrained(os.path.join(CHECKPOINT_DIR, f"unet_step_{global_step}"))
-            pipe.controlnet.save_pretrained(os.path.join(CHECKPOINT_DIR, f"controlnet_step_{global_step}"))
-            pipe.text_encoder.save_pretrained(os.path.join(CHECKPOINT_DIR, f"text_encoder_step_{global_step}"))
-            torch.save(optimizer.state_dict(), os.path.join(CHECKPOINT_DIR, f"optimizer_step_{global_step}.pt"))
-            print(f"✅ 保存 step {global_step} 的权重完成。")
+    if epoch == EPOCHS:
+        pipe.unet.save_pretrained(os.path.join(OUTPUT_DIR, "unet"))
+        pipe.controlnet.save_pretrained(os.path.join(OUTPUT_DIR, "controlnet"))
+        pipe.text_encoder.save_pretrained(os.path.join(OUTPUT_DIR, "text_encoder"))
+        torch.save(optimizer.state_dict(), os.path.join(OUTPUT_DIR, "optimizer.pt"))
+        print("训练完成，最终模型已保存。")
+    else:
+        pipe.unet.save_pretrained(os.path.join(CHECKPOINT_DIR, f"unet_epoch_{epoch}"))
+        pipe.controlnet.save_pretrained(os.path.join(CHECKPOINT_DIR, f"controlnet_epoch_{epoch}"))
+        pipe.text_encoder.save_pretrained(os.path.join(CHECKPOINT_DIR, f"text_encoder_epoch_{epoch}"))
+        torch.save(optimizer.state_dict(), os.path.join(CHECKPOINT_DIR, f"optimizer_epoch_{epoch}.pt"))
+        print(f"保存 epoch {epoch} 的权重完成。")
 
-# 训练结束，保存最终模型
-save_lora_attn_processors(pipe, OUTPUT_DIR)
-pipe.text_encoder.save_pretrained(os.path.join(OUTPUT_DIR, "text_encoder"))
-torch.save(optimizer.state_dict(), os.path.join(OUTPUT_DIR, "optimizer.pt"))
-print("✅ 训练完成，最终模型已保存。")
