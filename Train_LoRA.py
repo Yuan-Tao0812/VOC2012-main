@@ -10,7 +10,7 @@ from diffusers import (
     ControlNetModel,
     UniPCMultistepScheduler,
 )
-from diffusers.models.attention_processor import LoRAAttnProcessor
+from diffusers.models.attention_processor import LoRAAttnProcessor, LoRAAttnProcessor2_0
 
 # === 配置参数 ===
 DATA_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train/"
@@ -112,17 +112,18 @@ dataset = VisDroneControlNetDataset(DATA_DIR, PROMPT_FILE, tokenizer)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 # === 优化器（只训练 LoRA 和 text_encoder） ===
-def get_lora_parameters(attn_processors):
+def get_lora_parameters(attn_procs):
     params = []
-    for proc in attn_processors.values():
-        params.extend(proc.parameters())
+    for name, proc in attn_procs.items():
+        if isinstance(proc, (LoRAAttnProcessor, LoRAAttnProcessor2_0)):
+            params.extend(proc.parameters())
     return params
 
 optimizer = torch.optim.AdamW(
     get_lora_parameters(pipe.unet.attn_processors) +
     get_lora_parameters(pipe.controlnet.attn_processors) +
     list(pipe.text_encoder.parameters()),
-    lr=LR
+    lr=LR,
 )
 
 # === 训练循环 ===
