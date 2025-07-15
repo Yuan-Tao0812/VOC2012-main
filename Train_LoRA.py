@@ -23,7 +23,7 @@ BATCH_SIZE = 1
 EPOCHS = 50
 LR = 1e-4
 MAX_TOKEN_LENGTH = 77
-IMAGE_SIZE = 256
+IMAGE_SIZE = 512
 
 # === 加载 ControlNet 和 Pipeline ===
 controlnet = ControlNetModel.from_pretrained(
