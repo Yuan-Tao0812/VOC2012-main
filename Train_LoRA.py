@@ -125,12 +125,11 @@ optimizer = torch.optim.AdamW(
     list(pipe.text_encoder.parameters()),
     lr=LR,
 )
-print("unet device before loop:", next(pipe.unet.parameters()).device)
+
 pipe.unet.to(DEVICE)
-print("unet device before loop:", next(pipe.unet.parameters()).device)
+
 # === 训练循环 ===
 for epoch in range(EPOCHS):
-    print("unet device in loop:", next(pipe.unet.parameters()).device)
     pipe.unet.train()
     pipe.controlnet.train()
     pipe.text_encoder.train()
@@ -139,20 +138,22 @@ for epoch in range(EPOCHS):
     loop = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{EPOCHS}")
     for batch in loop:
         optimizer.zero_grad()
-        print("unet device in loop:", next(pipe.unet.parameters()).device)
+        print("unet device in loop0:", next(pipe.unet.parameters()).device)
 
         # 移动数据到设备
         image = batch["image"].to(DEVICE, dtype=torch.float16)
         layout = batch["layout"].to(DEVICE, dtype=torch.float16)
         input_ids = batch["input_ids"].to(DEVICE)
         attention_mask = batch["attention_mask"].to(DEVICE)
-
+        print("unet device in loop1:", next(pipe.unet.parameters()).device)
         # 编码文本
         encoder_hidden_states = pipe.text_encoder(input_ids=input_ids, attention_mask=attention_mask)[0].to(dtype=torch.float16).to(DEVICE)
-
+        print("unet device in loop2:", next(pipe.unet.parameters()).device)
         # 编码图像至latent
         latents = pipe.vae.encode(image).latent_dist.sample().to(DEVICE)
+        print("unet device in loop3:", next(pipe.unet.parameters()).device)
         latents = latents * pipe.vae.config.scaling_factor
+        print("unet device in loop4:", next(pipe.unet.parameters()).device)
         latents = latents.to(dtype=torch.float16)
 
         print("unet device:", next(pipe.unet.parameters()).device)
