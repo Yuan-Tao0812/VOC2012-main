@@ -117,12 +117,11 @@ def get_lora_parameters(attn_processors):
     return params
 
 optimizer = torch.optim.AdamW(
-    get_lora_parameters(pipe.unet.attn_processors) +
-    get_lora_parameters(pipe.controlnet.attn_processors) +
+    list(pipe.unet.get_attn_procs().parameters()) +
+    list(pipe.controlnet.get_attn_procs().parameters()) +
     list(pipe.text_encoder.parameters()),
     lr=LR,
 )
-
 
 # === 训练循环 ===
 for epoch in range(EPOCHS):
