@@ -9,6 +9,7 @@ from diffusers import (
     StableDiffusionControlNetPipeline,
     ControlNetModel,
     UniPCMultistepScheduler,
+    UNet2DConditionModel,
 )
 from diffusers.models.attention_processor import LoRAAttnProcessor, LoRAAttnProcessor2_0
 
@@ -188,16 +189,16 @@ for epoch in range(EPOCHS):
         # 定期保存checkpoint
         if global_step % SAVE_EVERY_N_STEPS == 0:
             print(f"\nSaving checkpoint at step {global_step}...")
-            pipe.unet.save_attn_procs(os.path.join(CHECKPOINT_DIR, f"unet_lora_step_{global_step}"))
-            pipe.controlnet.save_attn_procs(os.path.join(CHECKPOINT_DIR, f"controlnet_lora_step_{global_step}"))
+            unet_lora_path = os.path.join(CHECKPOINT_DIR, f"unet_lora_step_{global_step}")
+            pipe.unet.save_attn_processors(unet_lora_path)
+            controlnet_lora_path = os.path.join(CHECKPOINT_DIR, f"controlnet_lora_step_{global_step}")
+            pipe.controlnet.save_attn_processors(controlnet_lora_path)
             pipe.text_encoder.save_pretrained(os.path.join(CHECKPOINT_DIR, f"text_encoder_step_{global_step}"))
-
-            # 还可以保存优化器状态
             torch.save(optimizer.state_dict(), os.path.join(CHECKPOINT_DIR, f"optimizer_step_{global_step}.pt"))
 
 # 保存模型LoRA权重和文本编码器
-pipe.unet.save_attn_procs(os.path.join(OUTPUT_DIR, "unet_lora"))
-pipe.controlnet.save_attn_procs(os.path.join(OUTPUT_DIR, "controlnet_lora"))
+pipe.unet.save_attn_processors(os.path.join(OUTPUT_DIR, "unet_lora"))
+pipe.controlnet.save_attn_processors(os.path.join(OUTPUT_DIR, "controlnet_lora"))
 pipe.text_encoder.save_pretrained(os.path.join(OUTPUT_DIR, "text_encoder"))
 
 print("训练完成，模型保存完毕。")
