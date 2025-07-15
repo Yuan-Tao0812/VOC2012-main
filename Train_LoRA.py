@@ -21,7 +21,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 1
 EPOCHS = 50
-LR = 1e-4
+LR = 1e-5
 MAX_TOKEN_LENGTH = 77
 IMAGE_SIZE = 512
 
@@ -124,43 +124,30 @@ optimizer = torch.optim.AdamW(
     lr=LR,
 )
 
-pipe.unet.to(DEVICE)
 
 # === 训练循环 ===
 for epoch in range(EPOCHS):
     pipe.unet.train()
     pipe.controlnet.train()
     pipe.text_encoder.train()
-    print("unet device in loop:", next(pipe.unet.parameters()).device)
 
     loop = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{EPOCHS}")
     for batch in loop:
         optimizer.zero_grad()
-        print("unet device in loop0:", next(pipe.unet.parameters()).device)
 
         # 移动数据到设备
         image = batch["image"].to(DEVICE, dtype=torch.float16)
         layout = batch["layout"].to(DEVICE, dtype=torch.float16)
         input_ids = batch["input_ids"].to(DEVICE)
         attention_mask = batch["attention_mask"].to(DEVICE)
-        print("unet device in loop1:", next(pipe.unet.parameters()).device)
+
         # 编码文本
         encoder_hidden_states = pipe.text_encoder(input_ids=input_ids, attention_mask=attention_mask)[0].to(dtype=torch.float16).to(DEVICE)
-        print("unet device in loop2:", next(pipe.unet.parameters()).device)
+
         # 编码图像至latent
         latents = pipe.vae.encode(image).latent_dist.sample().to(DEVICE)
-        print("unet device in loop3:", next(pipe.unet.parameters()).device)
         latents = latents * pipe.vae.config.scaling_factor
-        print("unet device in loop4:", next(pipe.unet.parameters()).device)
         latents = latents.to(dtype=torch.float16)
-
-        print("unet device:", next(pipe.unet.parameters()).device)
-        print("vae device:", next(pipe.vae.parameters()).device)
-        print("text_encoder device:", next(pipe.text_encoder.parameters()).device)
-        print("image device:", image.device)
-        print("latents device:", latents.device)
-        print("encoder_hidden_states device:", encoder_hidden_states.device)
-        print("controlnet_cond device:", layout.device)  # 你传给controlnet的cond
 
         # 采样随机时间步
         timesteps = torch.randint(0, pipe.scheduler.config.num_train_timesteps, (latents.shape[0],), device=DEVICE).long()
