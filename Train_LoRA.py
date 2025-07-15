@@ -6,7 +6,7 @@ from tqdm import tqdm
 import torch
 from torch import nn, optim
 from transformers import CLIPTextModel, CLIPTokenizer
-from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, AttnProcsLayers
+from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
 from diffusers.models.attention_processor import LoRAAttnProcessor
 
 
