@@ -220,4 +220,3 @@ for epoch in range(1, EPOCHS+1):
         pipe.text_encoder.save_pretrained(os.path.join(CHECKPOINT_DIR, f"text_encoder_epoch_{epoch}"))
         torch.save(optimizer.state_dict(), os.path.join(CHECKPOINT_DIR, f"optimizer_epoch_{epoch}.pt"))
         print(f"保存 epoch {epoch} 的权重完成。")
-
