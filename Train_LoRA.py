@@ -21,9 +21,9 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 1
 EPOCHS = 50
-LR = 5e-6
+LR = 1e-4
 MAX_TOKEN_LENGTH = 77
-IMAGE_SIZE = 512
+IMAGE_SIZE = 256
 
 # === 加载 ControlNet 和 Pipeline ===
 controlnet = ControlNetModel.from_pretrained(
