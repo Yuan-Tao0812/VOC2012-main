@@ -108,13 +108,20 @@ class VisDroneControlNetDataset(Dataset):
 dataset = VisDroneControlNetDataset(DATA_DIR, PROMPT_FILE, tokenizer)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True, prefetch_factor=2)
 
+def get_attn_proc_state_dict(attn_proc):
+    state_dict = {}
+    # 试图收集可能的子module参数
+    for name, module in attn_proc.named_children():
+        state_dict[name] = module.state_dict()
+    return state_dict
+
 def save_lora_attn_processors(pipe, output_dir, step=None):
     step_str = f"_step_{step}" if step is not None else ""
 
-    unet_sd = {k: v.state_dict() for k, v in pipe.unet.attn_processors.items()}
+    unet_sd = {k: get_attn_proc_state_dict(v) for k, v in pipe.unet.attn_processors.items()}
     torch.save(unet_sd, os.path.join(output_dir, f"unet_lora{step_str}.pt"))
 
-    controlnet_sd = {k: v.state_dict() for k, v in pipe.controlnet.attn_processors.items()}
+    controlnet_sd = {k: get_attn_proc_state_dict(v) for k, v in pipe.controlnet.attn_processors.items()}
     torch.save(controlnet_sd, os.path.join(output_dir, f"controlnet_lora{step_str}.pt"))
 
     print(f"LoRA{step_str} weights saved")
