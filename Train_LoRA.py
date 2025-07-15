@@ -109,18 +109,15 @@ dataset = VisDroneControlNetDataset(DATA_DIR, PROMPT_FILE, tokenizer)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True, prefetch_factor=2)
 
 def save_lora_attn_processors(pipe, output_dir, step=None):
-    os.makedirs(output_dir, exist_ok=True)
+    step_str = f"_step_{step}" if step is not None else ""
 
-    # 路径带步数方便断点续训
-    unet_path = os.path.join(output_dir, f"unet_lora_step_{step}.pt" if step is not None else "unet_lora.pt")
-    controlnet_path = os.path.join(output_dir,
-                                   f"controlnet_lora_step_{step}.pt" if step is not None else "controlnet_lora.pt")
+    unet_sd = {k: v.state_dict() for k, v in pipe.unet.attn_processors.items()}
+    torch.save(unet_sd, os.path.join(output_dir, f"unet_lora{step_str}.pt"))
 
-    # 统一保存 LoRA attn_processors 的 state_dict（keys 带前缀）
-    torch.save(pipe.unet.attn_processors.state_dict(), unet_path)
-    torch.save(pipe.controlnet.attn_processors.state_dict(), controlnet_path)
+    controlnet_sd = {k: v.state_dict() for k, v in pipe.controlnet.attn_processors.items()}
+    torch.save(controlnet_sd, os.path.join(output_dir, f"controlnet_lora{step_str}.pt"))
 
-    print(f"LoRA weights saved: {unet_path}, {controlnet_path}")
+    print(f"LoRA{step_str} weights saved")
 
 # === 优化器（只训练 LoRA 和 text_encoder） ===
 def get_lora_parameters(attn_procs):
