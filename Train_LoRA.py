@@ -21,7 +21,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 1
 EPOCHS = 50
-LR = 1e-5
+LR = 5e-6
 MAX_TOKEN_LENGTH = 77
 IMAGE_SIZE = 512
 
@@ -182,6 +182,9 @@ for epoch in range(EPOCHS):
         loss = torch.nn.functional.mse_loss(noise_pred, noise)
 
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(list(pipe.unet.parameters()) +
+                                       list(pipe.controlnet.parameters()) +
+                                       list(pipe.text_encoder.parameters()), max_norm=1.0)
         optimizer.step()
 
         loop.set_postfix(loss=loss.item())
