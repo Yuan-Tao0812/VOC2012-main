@@ -11,8 +11,8 @@ from diffusers import (
     UniPCMultistepScheduler,
     UNet2DConditionModel,
 )
-from diffusers.models.attention_processor import LoRAAttnProcessor, LoRAAttnProcessor2_0, inject_trainable_lora
-
+from diffusers.models.attention_processor import LoRAAttnProcessor, LoRAAttnProcessor2_0
+from diffusers import inject_trainable_lora
 # === 配置参数 ===
 DATA_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train/"
 PROMPT_FILE = "prompt.jsonl"
