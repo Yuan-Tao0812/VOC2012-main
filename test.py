@@ -4,6 +4,7 @@ import random
 from PIL import Image, ImageDraw
 import torch
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, UniPCMultistepScheduler
+import torchvision.transforms as T
 
 # === 路径设置 ===
 BASE_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/test_sample"
@@ -94,7 +95,8 @@ def main():
 
     layout = generate_layout(objs, size=IMAGE_SIZE)
     layout.save(LAYOUT_PATH)
-
+    layout_tensor = T.ToTensor()(layout)
+    print("layout mean:", layout_tensor.mean().item())
     pipe = load_pipe()
     result = pipe(prompt, image=layout, num_inference_steps=30)
     result.images[0].save(IMAGE_PATH)
