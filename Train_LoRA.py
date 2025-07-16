@@ -44,19 +44,6 @@ pipe = pipe.to(DEVICE)
 pipe.unet.set_attn_processor(inject_trainable_lora(pipe.unet, rank=4))
 pipe.controlnet.set_attn_processor(inject_trainable_lora(pipe.controlnet, rank=4))
 
-# 设置可训练参数，只训练 LoRA 层和文本编码器
-for param in pipe.unet.parameters():
-    param.requires_grad = False
-for param in pipe.controlnet.parameters():
-    param.requires_grad = False
-
-# 然后解冻最后一个 down_block 和 mid_block
-for name, module in pipe.unet.named_modules():
-    if "down_blocks.3" in name or "mid_block" in name:
-        for param in module.parameters():
-            param.requires_grad = True
-
-
 pipe.text_encoder.train()
 for param in pipe.text_encoder.parameters():
     param.requires_grad = True
