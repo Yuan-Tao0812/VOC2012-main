@@ -24,7 +24,7 @@ os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 4
 EPOCHS = 50
-LR = 1e-5
+LR = 5e-5
 MAX_TOKEN_LENGTH = 77
 IMAGE_SIZE = 512
 
@@ -133,7 +133,7 @@ optimizer = torch.optim.AdamW(
 )
 
 # === 尝试加载断点 ===
-start_epoch = 38
+start_epoch = 43
 for epoch in range(EPOCHS, 0, -1):
     unet_path = os.path.join(CHECKPOINT_DIR, f"unet_epoch_{epoch}")
     if os.path.exists(unet_path):
