@@ -1,18 +1,20 @@
-import os
 import json
 from PIL import Image
 import torch
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
-from transformers import CLIPTokenizer
+import os
+from transformers import CLIPTokenizer, CLIPTextModel
 from diffusers import (
+    AutoencoderKL,
     StableDiffusionControlNetPipeline,
     ControlNetModel,
     UniPCMultistepScheduler,
     UNet2DConditionModel,
 )
 from diffusers.models.attention_processor import LoRAAttnProcessor, LoRAAttnProcessor2_0
-from diffusers import inject_trainable_lora
+from diffusers.training_utils import cast_training_params
+
 # === 配置参数 ===
 DATA_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train/"
 PROMPT_FILE = "prompt.jsonl"
@@ -41,17 +43,51 @@ pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 pipe = pipe.to(DEVICE)
 
 # === 注入 LoRA 注意力处理器 ===
+def inject_trainable_lora(model, rank=4):
+    lora_attn_procs = {}
+    for name, module in model.attn_processors.items():
+        # 从原 attention processor 推导 LoRA 版本
+        lora_attn_procs[name] = LoRAAttnProcessor2_0.from_processor(module, rank=rank)
+    model.set_attn_processor(lora_attn_procs)
+    return lora_attn_procs
+
 pipe.unet.set_attn_processor(inject_trainable_lora(pipe.unet, rank=4))
 pipe.controlnet.set_attn_processor(inject_trainable_lora(pipe.controlnet, rank=4))
 
-pipe.text_encoder.train()
-for param in pipe.text_encoder.parameters():
-    param.requires_grad = True
+# === 确保 LoRA 参数用 float32 精度训练（防止混合精度引发不稳定） ===
+cast_training_params(pipe.unet, dtype=torch.float32)
+cast_training_params(pipe.controlnet, dtype=torch.float32)
 
-trainable_params = [n for n, p in pipe.named_parameters() if p.requires_grad]
+# 冻结所有参数
+for param in pipe.unet.parameters():
+    param.requires_grad = False
+for param in pipe.controlnet.parameters():
+    param.requires_grad = False
+# 解冻 LoRA 的 processor 参数
+for proc in pipe.unet.attn_processors.values():
+    for p in proc.parameters():
+        p.requires_grad = True
+for proc in pipe.controlnet.attn_processors.values():
+    for p in proc.parameters():
+        p.requires_grad = True
+
+pipe.text_encoder.train()
+pipe.text_encoder.requires_grad_(True)
+
+# === 收集参数并创建优化器 ===
+trainable_params = []
+for proc in pipe.unet.attn_processors.values():
+    trainable_params += list(proc.parameters())
+for proc in pipe.controlnet.attn_processors.values():
+    trainable_params += list(proc.parameters())
+trainable_params += list(pipe.text_encoder.parameters())
+
+optimizer = torch.optim.AdamW(trainable_params, lr=LR)
+
 print(f"🔍 可训练参数数量: {len(trainable_params)}")
-print("📄 前几个可训练参数名：")
-print("\n".join(trainable_params[:10]))
+print("📄 前几个参数形状：")
+for p in trainable_params[:5]:
+    print(p.shape)
 
 pipe.unet.train()
 pipe.controlnet.train()
@@ -101,21 +137,6 @@ class VisDroneControlNetDataset(Dataset):
 
 dataset = VisDroneControlNetDataset(DATA_DIR, PROMPT_FILE, tokenizer)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True, prefetch_factor=2)
-
-# === 优化器（只训练 LoRA 和 text_encoder） ===
-def get_lora_parameters(attn_procs):
-    params = []
-    for name, proc in attn_procs.items():
-        if isinstance(proc, (LoRAAttnProcessor, LoRAAttnProcessor2_0)):
-            params.extend(proc.parameters())
-    return params
-
-optimizer = torch.optim.AdamW(
-    get_lora_parameters(pipe.unet.attn_processors) +
-    get_lora_parameters(pipe.controlnet.attn_processors) +
-    list(pipe.text_encoder.parameters()),
-    lr=LR,
-)
 
 # === 尝试加载断点 ===
 start_epoch =1
