@@ -18,17 +18,15 @@ DATA_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train/"
 PROMPT_FILE = "prompt.jsonl"
 OUTPUT_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/trained_lora_controlnet/"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-CHECKPOINT_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/checkpoints"
+CHECKPOINT_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/checkpoints_1e-5"
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 1
 EPOCHS = 50
-LR = 1e-4
+LR = 1e-5
 MAX_TOKEN_LENGTH = 77
 IMAGE_SIZE = 512
-SAVE_EVERY_N_STEPS = 500  # 每多少步保存一次
-global_step = 0
 
 # === 加载 ControlNet 和 Pipeline ===
 controlnet = ControlNetModel.from_pretrained(
@@ -108,28 +106,6 @@ class VisDroneControlNetDataset(Dataset):
 dataset = VisDroneControlNetDataset(DATA_DIR, PROMPT_FILE, tokenizer)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True, prefetch_factor=2)
 
-def save_lora_attn_processors(pipe, output_dir, step=None):
-    step_str = f"_step_{step}" if step is not None else ""
-
-    def extract_lora_weights(attn_processors):
-        lora_state_dict = {}
-        for name, proc in attn_processors.items():
-            if isinstance(proc, (LoRAAttnProcessor, LoRAAttnProcessor2_0)):
-                # 提取 lora_up 和 lora_down 的权重
-                lora_state_dict[f"{name}.lora_up"] = proc.lora_up.state_dict()
-                lora_state_dict[f"{name}.lora_down"] = proc.lora_down.state_dict()
-                if hasattr(proc, "alpha"):
-                    lora_state_dict[f"{name}.alpha"] = proc.alpha
-        return lora_state_dict
-
-    # 保存 UNet LoRA
-    unet_lora = extract_lora_weights(pipe.unet.attn_processors)
-    torch.save(unet_lora, os.path.join(output_dir, f"unet_lora{step_str}.pt"))
-
-    # 保存 ControlNet LoRA
-    controlnet_lora = extract_lora_weights(pipe.controlnet.attn_processors)
-    torch.save(controlnet_lora, os.path.join(output_dir, f"controlnet_lora{step_str}.pt"))
-
 # === 优化器（只训练 LoRA 和 text_encoder） ===
 def get_lora_parameters(attn_procs):
     params = []
@@ -145,16 +121,29 @@ optimizer = torch.optim.AdamW(
     lr=LR,
 )
 
+# === 尝试加载断点 ===
+start_epoch = 30
+for epoch in range(EPOCHS, 0, -1):
+    unet_path = os.path.join(CHECKPOINT_DIR, f"unet_epoch_{epoch}")
+    if os.path.exists(unet_path):
+        print(f"🔁 恢复 epoch {epoch} 的检查点...")
+        pipe.unet = pipe.unet.from_pretrained(unet_path).to(DEVICE)
+        pipe.controlnet = pipe.controlnet.from_pretrained(os.path.join(CHECKPOINT_DIR, f"controlnet_epoch_{epoch}")).to(DEVICE)
+        pipe.text_encoder = pipe.text_encoder.from_pretrained(os.path.join(CHECKPOINT_DIR, f"text_encoder_epoch_{epoch}")).to(DEVICE)
+        optimizer.load_state_dict(torch.load(os.path.join(CHECKPOINT_DIR, f"optimizer_epoch_{epoch}.pt"), map_location=DEVICE))
+        start_epoch = epoch + 1
+        break
 
 # === 训练循环 ===
-for epoch in range(1, EPOCHS+1):
+for epoch in range(start_epoch, EPOCHS+1):
     pipe.unet.train()
     pipe.controlnet.train()
     pipe.text_encoder.train()
 
-    loop = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{EPOCHS}")
+    loop = tqdm(dataloader, desc=f"Epoch {epoch}/{EPOCHS}")
+    total_loss = 0
+    step_count = 0
     for batch in loop:
-        global_step +=1
         optimizer.zero_grad()
 
         # 移动数据到设备
@@ -207,7 +196,13 @@ for epoch in range(1, EPOCHS+1):
                                        list(pipe.controlnet.parameters()) +
                                        list(pipe.text_encoder.parameters()), max_norm=1.0)
         optimizer.step()
+        total_loss += loss.item()
+        step_count += 1
         loop.set_postfix(loss=loss.item())
+
+    avg_loss = total_loss / step_count if step_count > 0 else 0
+    print(f"平均 Loss（Epoch {epoch}）: {avg_loss:.6f}")
+
     if epoch == EPOCHS:
         pipe.unet.save_pretrained(os.path.join(OUTPUT_DIR, "unet"))
         pipe.controlnet.save_pretrained(os.path.join(OUTPUT_DIR, "controlnet"))
