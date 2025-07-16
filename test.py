@@ -62,14 +62,14 @@ def generate_labels(objs, width, height, path):
 
 # === layout图生成 ===
 def generate_layout(objs, size=512):
-    img = Image.new("RGB", (size, size), color="white")
+    img = Image.new("RGB", (size, size), color="black")
     draw = ImageDraw.Draw(img)
     for _ in objs:
         x0 = random.randint(0, size)
         y0 = random.randint(0, size)
         x1 = x0 + random.randint(10, 50)
         y1 = y0 + random.randint(10, 50)
-        draw.rectangle((x0, y0, x1, y1), outline="black", width=2)
+        draw.rectangle((x0, y0, x1, y1), outline="white", width=2)
     return img
 
 # === 加载训练模型 ===
