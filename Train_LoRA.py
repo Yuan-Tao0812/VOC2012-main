@@ -22,7 +22,7 @@ CHECKPOINT_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/checkpoints"
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-BATCH_SIZE = 1
+BATCH_SIZE = 4
 EPOCHS = 50
 LR = 1e-5
 MAX_TOKEN_LENGTH = 77
@@ -42,16 +42,27 @@ pipe = pipe.to(DEVICE)
 
 # === 注入 LoRA 注意力处理器 ===
 for name in pipe.unet.attn_processors.keys():
-    pipe.unet.attn_processors[name] = LoRAAttnProcessor()
+    pipe.unet.attn_processors[name] = LoRAAttnProcessor(r=8)
 
 for name in pipe.controlnet.attn_processors.keys():
-    pipe.controlnet.attn_processors[name] = LoRAAttnProcessor()
+    pipe.controlnet.attn_processors[name] = LoRAAttnProcessor(r=8)
 
 # 设置可训练参数，只训练 LoRA 层和文本编码器
 for param in pipe.unet.parameters():
     param.requires_grad = False
 for param in pipe.controlnet.parameters():
     param.requires_grad = False
+
+# 然后解冻最后一个 down_block 和 mid_block
+for name, module in pipe.unet.named_modules():
+    if "down_blocks.3" in name or "mid_block" in name:
+        for param in module.parameters():
+            param.requires_grad = True
+
+for name, module in pipe.controlnet.named_modules():
+    if "down_blocks.3" in name or "mid_block" in name:
+        for param in module.parameters():
+            param.requires_grad = True
 
 pipe.text_encoder.train()
 for param in pipe.text_encoder.parameters():
@@ -122,7 +133,7 @@ optimizer = torch.optim.AdamW(
 )
 
 # === 尝试加载断点 ===
-start_epoch = 33
+start_epoch = 35
 for epoch in range(EPOCHS, 0, -1):
     unet_path = os.path.join(CHECKPOINT_DIR, f"unet_epoch_{epoch}")
     if os.path.exists(unet_path):
