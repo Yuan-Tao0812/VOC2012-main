@@ -133,7 +133,7 @@ optimizer = torch.optim.AdamW(
 )
 
 # === 尝试加载断点 ===
-start_epoch = 43
+start_epoch = 42
 for epoch in range(EPOCHS, 0, -1):
     unet_path = os.path.join(CHECKPOINT_DIR, f"unet_epoch_{epoch}")
     if os.path.exists(unet_path):

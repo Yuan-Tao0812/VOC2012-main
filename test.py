@@ -14,9 +14,9 @@ LABEL_PATH = os.path.join(BASE_DIR, "test.txt")
 PROMPT_JSONL = os.path.join(BASE_DIR, "prompt1.jsonl")
 
 # === 模型路径 ===
-UNET_PATH = "/content/drive/MyDrive/VisDrone2019-YOLO/checkpoints/unet_epoch_32"
-CONTROLNET_PATH = "/content/drive/MyDrive/VisDrone2019-YOLO/checkpoints/controlnet_epoch_32"
-TEXT_ENCODER_PATH = "/content/drive/MyDrive/VisDrone2019-YOLO/checkpoints/text_encoder_epoch_32"
+UNET_PATH = "/content/drive/MyDrive/VisDrone2019-YOLO/trained_lora_controlnet/unet"
+CONTROLNET_PATH = "/content/drive/MyDrive/VisDrone2019-YOLO/trained_lora_controlnet/controlnet"
+TEXT_ENCODER_PATH = "/content/drive/MyDrive/VisDrone2019-YOLO/trained_lora_controlnet/text_encoder"
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 IMAGE_SIZE = 512
