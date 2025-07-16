@@ -46,8 +46,15 @@ pipe = pipe.to(DEVICE)
 def inject_trainable_lora(model, rank=4):
     lora_attn_procs = {}
     for name, module in model.attn_processors.items():
-        # 从原 attention processor 推导 LoRA 版本
-        lora_attn_procs[name] = LoRAAttnProcessor2_0.from_processor(module, rank=rank)
+        # 如果from_processor方法报错，改用手动构造
+        try:
+            lora_attn_procs[name] = LoRAAttnProcessor2_0.from_processor(module, rank=rank)
+        except AttributeError:
+            # 手动创建，确保module有hidden_size属性
+            hidden_size = getattr(module, "hidden_size", None)
+            if hidden_size is None:
+                raise ValueError(f"Module {name} missing hidden_size attribute required for LoRA")
+            lora_attn_procs[name] = LoRAAttnProcessor2_0(hidden_size=hidden_size, rank=rank)
     model.set_attn_processor(lora_attn_procs)
     return lora_attn_procs
 
