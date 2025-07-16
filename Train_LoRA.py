@@ -122,11 +122,11 @@ optimizer = torch.optim.AdamW(
 )
 
 # === 尝试加载断点 ===
-start_epoch = 30
+start_epoch = 33
 for epoch in range(EPOCHS, 0, -1):
     unet_path = os.path.join(CHECKPOINT_DIR, f"unet_epoch_{epoch}")
     if os.path.exists(unet_path):
-        print(f"🔁 恢复 epoch {epoch} 的检查点...")
+        print(f"恢复 epoch {epoch} 的检查点...")
         pipe.unet = pipe.unet.from_pretrained(unet_path).to(DEVICE)
         pipe.controlnet = pipe.controlnet.from_pretrained(os.path.join(CHECKPOINT_DIR, f"controlnet_epoch_{epoch}")).to(DEVICE)
         pipe.text_encoder = pipe.text_encoder.from_pretrained(os.path.join(CHECKPOINT_DIR, f"text_encoder_epoch_{epoch}")).to(DEVICE)
