@@ -42,10 +42,10 @@ pipe = pipe.to(DEVICE)
 
 # === 注入 LoRA 注意力处理器 ===
 for name in pipe.unet.attn_processors.keys():
-    pipe.unet.attn_processors[name] = LoRAAttnProcessor(r=8)
+    pipe.unet.attn_processors[name] = LoRAAttnProcessor()
 
 for name in pipe.controlnet.attn_processors.keys():
-    pipe.controlnet.attn_processors[name] = LoRAAttnProcessor(r=8)
+    pipe.controlnet.attn_processors[name] = LoRAAttnProcessor()
 
 # 设置可训练参数，只训练 LoRA 层和文本编码器
 for param in pipe.unet.parameters():
