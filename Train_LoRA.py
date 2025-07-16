@@ -11,7 +11,7 @@ from diffusers import (
     UniPCMultistepScheduler,
     UNet2DConditionModel,
 )
-from diffusers.models.attention_processor import LoRAAttnProcessor, LoRAAttnProcessor2_0
+from diffusers.models.attention_processor import LoRAAttnProcessor, LoRAAttnProcessor2_0, inject_trainable_lora
 
 # === 配置参数 ===
 DATA_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train/"
@@ -41,11 +41,8 @@ pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 pipe = pipe.to(DEVICE)
 
 # === 注入 LoRA 注意力处理器 ===
-for name in pipe.unet.attn_processors.keys():
-    pipe.unet.attn_processors[name] = LoRAAttnProcessor()
-
-for name in pipe.controlnet.attn_processors.keys():
-    pipe.controlnet.attn_processors[name] = LoRAAttnProcessor()
+pipe.unet.set_attn_processor(inject_trainable_lora(pipe.unet, rank=4))
+pipe.controlnet.set_attn_processor(inject_trainable_lora(pipe.controlnet, rank=4))
 
 # 设置可训练参数，只训练 LoRA 层和文本编码器
 for param in pipe.unet.parameters():
@@ -59,14 +56,15 @@ for name, module in pipe.unet.named_modules():
         for param in module.parameters():
             param.requires_grad = True
 
-for name, module in pipe.controlnet.named_modules():
-    if "down_blocks.3" in name or "mid_block" in name:
-        for param in module.parameters():
-            param.requires_grad = True
 
 pipe.text_encoder.train()
 for param in pipe.text_encoder.parameters():
     param.requires_grad = True
+
+trainable_params = [n for n, p in pipe.named_parameters() if p.requires_grad]
+print(f"🔍 可训练参数数量: {len(trainable_params)}")
+print("📄 前几个可训练参数名：")
+print("\n".join(trainable_params[:10]))
 
 pipe.unet.train()
 pipe.controlnet.train()
@@ -133,7 +131,7 @@ optimizer = torch.optim.AdamW(
 )
 
 # === 尝试加载断点 ===
-start_epoch = 42
+start_epoch =1
 for epoch in range(EPOCHS, 0, -1):
     unet_path = os.path.join(CHECKPOINT_DIR, f"unet_epoch_{epoch}")
     if os.path.exists(unet_path):
