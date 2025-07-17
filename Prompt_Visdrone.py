@@ -105,10 +105,13 @@ def recursive_crop(img, layout, boxes, crop_box, image_id, prefix):
     selected_boxes = get_boxes_in_crop(boxes, crop_box, threshold=0.5)
 
     if len(selected_boxes) <= MAX_OBJECTS:
-        global global_counter  # ✅ 改动2：使用全局唯一编号
-        save_name = f"{global_counter:06d}"  # change
-        global_counter += 1  # change
-        return [save_crop(img, layout, crop_box, selected_boxes, save_name)]
+        global global_counter  # ✅ 改动2
+        save_name = f"{global_counter:06d}"
+        global_counter += 1
+        result = save_crop(img, layout, crop_box, selected_boxes, save_name)
+        write_entry(result)  # ✅ 改动3：边裁剪边写入
+        show_progress()      # ✅ 改动4：更新数字显示
+        return [result]
 
     width = cx2 - cx1
     height = cy2 - cy1
@@ -116,21 +119,31 @@ def recursive_crop(img, layout, boxes, crop_box, image_id, prefix):
     results = []
     if width >= height:
         mid_x = (cx1 + cx2) // 2
-        left_crop = (cx1, cy1, mid_x, cy2)
-        right_crop = (mid_x, cy1, cx2, cy2)
-        results.extend(recursive_crop(img, layout, boxes, left_crop, image_id, prefix + "_0"))
-        results.extend(recursive_crop(img, layout, boxes, right_crop, image_id, prefix + "_1"))
+        results.extend(recursive_crop(img, layout, boxes, (cx1, cy1, mid_x, cy2), image_id, prefix + "_0"))
+        results.extend(recursive_crop(img, layout, boxes, (mid_x, cy1, cx2, cy2), image_id, prefix + "_1"))
     else:
         mid_y = (cy1 + cy2) // 2
-        top_crop = (cx1, cy1, cx2, mid_y)
-        bottom_crop = (cx1, mid_y, cx2, cy2)
-        results.extend(recursive_crop(img, layout, boxes, top_crop, image_id, prefix + "_0"))
-        results.extend(recursive_crop(img, layout, boxes, bottom_crop, image_id, prefix + "_1"))
-
+        results.extend(recursive_crop(img, layout, boxes, (cx1, cy1, cx2, mid_y), image_id, prefix + "_0"))
+        results.extend(recursive_crop(img, layout, boxes, (cx1, mid_y, cx2, cy2), image_id, prefix + "_1"))
     return results
 
+written_count = 0  # ✅ 改动5：计数器定义
+
+def write_entry(entry):  # ✅ 改动6：单条写入函数
+    global written_count
+    with open(PROMPT_JSONL, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    written_count += 1
+
+def show_progress():  # ✅ 改动7：动态进度显示
+    print(f"\r已写入数量: {written_count}", end="")
+
 def main():
-    all_data = []
+    if os.path.exists(PROMPT_JSONL):
+        os.remove(PROMPT_JSONL)  # ✅ 改动8：清空旧文件
+
     for label_file in tqdm(os.listdir(YOLO_LABELS_DIR)):
         if not label_file.endswith(".txt"):
             continue
@@ -150,24 +163,10 @@ def main():
 
         width, height = img.size
         full_layout = generate_layout(boxes, width, height)
-
         crop_box = (0, 0, width, height)
-        results = recursive_crop(img, full_layout, boxes, crop_box, image_id, "0")
-        all_data.extend(results)
+        recursive_crop(img, full_layout, boxes, crop_box, image_id, "0")
 
-    print(f"[INFO] Saving {len(all_data)} prompts to {PROMPT_JSONL}")  # ✅ 改动3：打印路径和数量   change
-
-    with open(PROMPT_JSONL, "w", encoding="utf-8") as f:
-        for i, entry in enumerate(all_data):  # ✅ 改动4：增加异常捕获和定位
-            try:  # change
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")  # change
-            except Exception as e:  # change
-                print(f"[ERROR] Failed to write entry #{i}: {e}")  # change
-                print("Entry:", entry)  # change
-        f.flush()  # ✅ 改动5：强制刷新缓冲区
-        os.fsync(f.fileno())  # ✅ 改动6：确保写入磁盘
-
-    print(f"✅ 完成，写入成功，共生成裁剪块数量: {len(all_data)}")  # ✅ 改动7：写入成功确认
+    print(f"\n✅ 完成，写入成功，共生成裁剪块数量: {written_count}")  # ✅ 改动9
 
 if __name__ == "__main__":
     main()
