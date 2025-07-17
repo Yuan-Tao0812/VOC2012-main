@@ -13,7 +13,6 @@ OUTPUT_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train-s
 PROMPT_JSONL = os.path.join(OUTPUT_DIR, "prompt.jsonl")
 
 MAX_OBJECTS_PER_CROP = 10
-MIN_CROP_SIZE = 256
 IMAGE_SIZE = 512
 
 VISDRONE_CLASSES = [
