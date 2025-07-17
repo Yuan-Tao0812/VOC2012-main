@@ -5,6 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import os
 from transformers import CLIPTokenizer, CLIPTextModel
+from peft import LoraConfig
 from diffusers import (
     AutoencoderKL,
     StableDiffusionControlNetPipeline,
@@ -12,7 +13,7 @@ from diffusers import (
     UniPCMultistepScheduler,
     UNet2DConditionModel,
 )
-from diffusers.models.attention_processor import LoRAAttnProcessor, LoRAAttnProcessor2_0
+from diffusers.models.attention_processor import LoRAAttnProcessor
 from diffusers.training_utils import cast_training_params
 
 # === 配置参数 ===
@@ -42,54 +43,58 @@ pipe = StableDiffusionControlNetPipeline.from_pretrained(
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 pipe = pipe.to(DEVICE)
 
-# === 注入 LoRA 注意力处理器 ===
-def inject_trainable_lora(model, rank=4):
-    lora_attn_procs = {}
-    for name, module in model.named_modules():
-        # 过滤出真正的attention模块，这里假设有 hidden_size 属性的是目标
-        if hasattr(module, "to_q") and hasattr(module, "hidden_size"):
-            # 该module是attention模块，给它创建 LoRA processor
-            lora_attn_procs[name] = LoRAAttnProcessor2_0(hidden_size=module.hidden_size, rank=rank)
-    model.set_attn_processor(lora_attn_procs)
-    return lora_attn_procs
+# === 注入 LoRA 注意力处理器 ===新
+unet_lora_config = LoraConfig(
+    r=4,
+    lora_alpha=4,
+    init_lora_weights="gaussian",
+    target_modules=["to_q", "to_k", "to_v", "to_out.0"],  # 官方推荐组合
+)
+controlnet_lora_config = LoraConfig(
+    r=4,
+    lora_alpha=4,
+    init_lora_weights="gaussian",
+    target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+)
 
-pipe.unet.set_attn_processor(inject_trainable_lora(pipe.unet, rank=4))
-pipe.controlnet.set_attn_processor(inject_trainable_lora(pipe.controlnet, rank=4))
+pipe.unet.add_adapter(unet_lora_config)
+pipe.controlnet.add_adapter(controlnet_lora_config)     # 新
 
 # === 确保 LoRA 参数用 float32 精度训练（防止混合精度引发不稳定） ===
 cast_training_params(pipe.unet, dtype=torch.float32)
 cast_training_params(pipe.controlnet, dtype=torch.float32)
 
-# 冻结所有参数
-for param in pipe.unet.parameters():
-    param.requires_grad = False
-for param in pipe.controlnet.parameters():
-    param.requires_grad = False
-# 解冻 LoRA 的 processor 参数
-for proc in pipe.unet.attn_processors.values():
-    for p in proc.parameters():
-        p.requires_grad = True
-for proc in pipe.controlnet.attn_processors.values():
-    for p in proc.parameters():
-        p.requires_grad = True
-
-pipe.text_encoder.train()
+# 冻结所有参数 新
+pipe.unet.requires_grad_(False)
+pipe.controlnet.requires_grad_(False)
 pipe.text_encoder.requires_grad_(True)
+pipe.text_encoder.train()
 
 # === 收集参数并创建优化器 ===
 trainable_params = []
-for proc in pipe.unet.attn_processors.values():
-    trainable_params += list(proc.parameters())
+for proc in pipe.unet.attn_processors.values():   # 新
+    for p in proc.parameters():
+        if p.requires_grad:
+            trainable_params.append(p)
 for proc in pipe.controlnet.attn_processors.values():
-    trainable_params += list(proc.parameters())
+    for p in proc.parameters():
+        if p.requires_grad:
+            trainable_params.append(p)
 trainable_params += list(pipe.text_encoder.parameters())
-
+# 参数检查
+print("✅ 参数检查：")
+for name, param in pipe.unet.named_parameters():
+    if param.requires_grad:
+        print(f"[UNet] 训练参数: {name} - {param.shape}")
+for name, param in pipe.controlnet.named_parameters():
+    if param.requires_grad:
+        print(f"[ControlNet] 训练参数: {name} - {param.shape}")
+for name, param in pipe.text_encoder.named_parameters():
+    if param.requires_grad:
+        print(f"[TextEncoder] 训练参数: {name} - {param.shape}")
 optimizer = torch.optim.AdamW(trainable_params, lr=LR)
-
-print(f"🔍 可训练参数数量: {len(trainable_params)}")
-print("📄 前几个参数形状：")
-for p in trainable_params[:5]:
-    print(p.shape)
+trainable_count = sum(p.numel() for p in trainable_params if p.requires_grad)
+print(f"🧮 Optimizer 中可训练参数总数: {trainable_count}")    # 新
 
 pipe.unet.train()
 pipe.controlnet.train()
@@ -211,6 +216,10 @@ for epoch in range(start_epoch, EPOCHS+1):
         # 计算损失
         loss = torch.nn.functional.mse_loss(noise_pred, noise)
         loss.backward()
+        for name, param in pipe.unet.named_parameters():  # 新
+            if param.requires_grad and param.grad is not None:
+                print(f"📈 梯度检查: {name} 的梯度均值: {param.grad.abs().mean().item():.6f}")
+                break   # 新
         torch.nn.utils.clip_grad_norm_(list(pipe.unet.parameters()) +
                                        list(pipe.controlnet.parameters()) +
                                        list(pipe.text_encoder.parameters()), max_norm=1.0)
@@ -221,6 +230,14 @@ for epoch in range(start_epoch, EPOCHS+1):
 
     avg_loss = total_loss / step_count if step_count > 0 else 0
     print(f"平均 Loss（Epoch {epoch}）: {avg_loss:.6f}")
+
+    if epoch == start_epoch:     # 新
+        initial_param_snapshot = pipe.unet.attn_processors[
+            "mid_block.attn1.processor"].to_q_lora.lora_A.weight.detach().clone()
+    elif epoch > start_epoch:
+        current_param = pipe.unet.attn_processors["mid_block.attn1.processor"].to_q_lora.lora_A.weight
+        delta = (current_param - initial_param_snapshot).abs().mean().item()
+        print(f"🧪 参数变化均值 (mid_block to_q): {delta:.6f}")    # 新
 
     if epoch == EPOCHS:
         pipe.unet.save_pretrained(os.path.join(OUTPUT_DIR, "unet"))
