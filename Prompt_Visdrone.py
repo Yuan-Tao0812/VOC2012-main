@@ -2,28 +2,23 @@ import os
 import json
 from PIL import Image, ImageDraw
 from tqdm import tqdm
-from collections import Counter
-import numpy as np
 
-# === 配置路径 ===
-YOLO_LABELS_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train/labels/"
-IMAGES_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train/images/"
+# ========== 配置 ==========
+YOLO_LABELS_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-renamed/labels/"
+IMAGES_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-renamed/images/"
 OUTPUT_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train-split/"
 PROMPT_JSONL = os.path.join(OUTPUT_DIR, "prompt.jsonl")
 
-MAX_OBJECTS_PER_CROP = 10
-IMAGE_SIZE = 512
-
+MAX_OBJECTS = 10
 VISDRONE_CLASSES = [
     "pedestrian", "people", "bicycle", "car", "van",
     "truck", "tricycle", "awning-tricycle", "bus", "motor"
 ]
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(os.path.join(OUTPUT_DIR, "images"), exist_ok=True)
 os.makedirs(os.path.join(OUTPUT_DIR, "layouts"), exist_ok=True)
 
-def load_yolo_annotations(label_path):
+def load_yolo_boxes(label_path, img_w, img_h):
     boxes = []
     with open(label_path, 'r') as f:
         for line in f:
@@ -31,145 +26,162 @@ def load_yolo_annotations(label_path):
             if len(parts) != 5:
                 continue
             cls_id, cx, cy, w, h = map(float, parts)
-            boxes.append((int(cls_id), cx, cy, w, h))
+            x1 = (cx - w/2) * img_w
+            y1 = (cy - h/2) * img_h
+            x2 = (cx + w/2) * img_w
+            y2 = (cy + h/2) * img_h
+            boxes.append((int(cls_id), x1, y1, x2, y2))
     return boxes
 
-def yolo_to_absolute(box, img_w, img_h):
-    cls_id, cx, cy, w, h = box
-    x1 = int((cx - w/2) * img_w)
-    y1 = int((cy - h/2) * img_h)
-    x2 = int((cx + w/2) * img_w)
-    y2 = int((cy + h/2) * img_h)
-    return cls_id, max(0,x1), max(0,y1), min(img_w,x2), min(img_h,y2)
+def get_ioa(box, crop_box):
+    """
+    计算目标框在裁剪框内的交叠比例（面积比）
+    """
+    _, x1, y1, x2, y2 = box
+    cx1, cy1, cx2, cy2 = crop_box
 
-def generate_layout_image(boxes, img_w, img_h):
-    layout = Image.new("L", (img_w, img_h), 0)  # 单通道黑底
-    draw = ImageDraw.Draw(layout)
-    for cls_id, x1, y1, x2, y2 in boxes:
-        draw.rectangle([x1, y1, x2, y2], outline=255, width=2)  # 白色轮廓线，宽度2
-    return layout.convert("RGB")  # 如果后续需要3通道图，转回RGB
+    inter_x1 = max(x1, cx1)
+    inter_y1 = max(y1, cy1)
+    inter_x2 = min(x2, cx2)
+    inter_y2 = min(y2, cy2)
 
-def split_into_dynamic_crops(boxes, img_w, img_h, max_objs=MAX_OBJECTS_PER_CROP, grid_size=4):
-    grid_w, grid_h = img_w / grid_size, img_h / grid_size
-    grid_counts = np.zeros((grid_size, grid_size), dtype=int)
-    grid_boxes = [[[] for _ in range(grid_size)] for _ in range(grid_size)]
+    inter_w = max(0, inter_x2 - inter_x1)
+    inter_h = max(0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
 
+    box_area = (x2 - x1) * (y2 - y1)
+    return inter_area / box_area if box_area > 0 else 0
+
+def get_boxes_in_crop(boxes, crop_box, threshold=0.5):
+    """
+    获取所有在crop_box中面积比例≥threshold的目标框，坐标转换为相对crop_box的坐标
+    """
+    cx1, cy1, cx2, cy2 = crop_box
+    selected = []
     for box in boxes:
-        _, x1, y1, x2, y2 = box
-        cx = (x1 + x2) / 2
-        cy = (y1 + y2) / 2
-        gx = min(int(cx // grid_w), grid_size-1)
-        gy = min(int(cy // grid_h), grid_size-1)
-        grid_counts[gy, gx] += 1
-        grid_boxes[gy][gx].append(box)
+        cls_id, x1, y1, x2, y2 = box
+        ioa = get_ioa(box, crop_box)
+        if ioa >= threshold:
+            adj_x1 = max(0, x1 - cx1)
+            adj_y1 = max(0, y1 - cy1)
+            adj_x2 = min(cx2 - cx1, x2 - cx1)
+            adj_y2 = min(cy2 - cy1, y2 - cy1)
+            selected.append((cls_id, adj_x1, adj_y1, adj_x2, adj_y2))
+    return selected
 
-    crops = []
-    visited = np.zeros_like(grid_counts, dtype=bool)
+def generate_layout(boxes, width, height):
+    """
+    生成布局图，只有目标对应区域画白色，背景黑色
+    """
+    layout = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(layout)
+    for _, x1, y1, x2, y2 in boxes:
+        draw.rectangle([x1, y1, x2, y2], fill=255)
+    return layout.convert("RGB")
 
-    for gy in range(grid_size):
-        for gx in range(grid_size):
-            if visited[gy, gx]:
-                continue
-            count = grid_counts[gy, gx]
-            if count == 0:
-                visited[gy, gx] = True
-                continue
+def save_crop(img, layout, crop_box, boxes, save_name):
+    """
+    裁剪原图和布局图，保存到磁盘
+    """
+    cx1, cy1, cx2, cy2 = map(int, crop_box)
+    crop_img = img.crop((cx1, cy1, cx2, cy2))
+    crop_layout = generate_layout(boxes, cx2 - cx1, cy2 - cy1)
+    crop_layout = crop_layout.crop((0, 0, cx2 - cx1, cy2 - cy1))
 
-            if count >= max_objs:
-                crops.append(grid_boxes[gy][gx])
-                visited[gy, gx] = True
-            else:
-                merged_boxes = list(grid_boxes[gy][gx])
-                visited[gy, gx] = True
+    # 缩放到512x512
+    crop_img = crop_img.resize((512, 512), Image.LANCZOS)
+    crop_layout = crop_layout.resize((512, 512), Image.LANCZOS)
 
-                # 简单向右和向下合并
-                for dy, dx in [(0,1), (1,0)]:
-                    ny, nx = gy + dy, gx + dx
-                    if 0 <= ny < grid_size and 0 <= nx < grid_size and not visited[ny, nx]:
-                        if grid_counts[ny, nx] > 0 and len(merged_boxes) + grid_counts[ny, nx] <= max_objs:
-                            merged_boxes.extend(grid_boxes[ny][nx])
-                            visited[ny, nx] = True
-                crops.append(merged_boxes)
-    return crops
+    img_path = f"images/{save_name}.jpg"
+    layout_path = f"layouts/{save_name}.png"
 
-def get_crop_bbox(boxes, pad, img_w, img_h):
-    x1 = min(b[1] for b in boxes)
-    y1 = min(b[2] for b in boxes)
-    x2 = max(b[3] for b in boxes)
-    y2 = max(b[4] for b in boxes)
+    crop_img.save(os.path.join(OUTPUT_DIR, img_path))
+    crop_layout.save(os.path.join(OUTPUT_DIR, layout_path))
 
-    x1 = max(0, x1 - pad)
-    y1 = max(0, y1 - pad)
-    x2 = min(img_w, x2 + pad)
-    y2 = min(img_h, y2 + pad)
-
-    return int(x1), int(y1), int(x2), int(y2)
-
-def crop_and_save(img, layout, boxes, crop_idx, image_id):
-    img_w, img_h = img.size
-    pad = 20
-
-    x1, y1, x2, y2 = get_crop_bbox(boxes, pad, img_w, img_h)
-
-    crop_img = img.crop((x1,y1,x2,y2)).resize((IMAGE_SIZE, IMAGE_SIZE))
-    crop_layout = layout.crop((x1,y1,x2,y2)).resize((IMAGE_SIZE, IMAGE_SIZE))
-
-    crop_objects = [b[0] for b in boxes]
-    rel_boxes = [(cls_id, (b[1]+b[3])/2 - x1) for cls_id, *b in boxes]
-
-    counter = Counter(crop_objects)
-    desc = [f"{count} {VISDRONE_CLASSES[cls]}{'s' if count > 1 else ''}" for cls, count in sorted(counter.items())]
-    cls_order = sorted(rel_boxes, key=lambda x: x[1])
-    sequence = ", ".join([VISDRONE_CLASSES[cls] for cls, _ in cls_order])
-
-    prompt = f"There are {', '.join(desc)} in the image. From left to right: {sequence}."
-
-    crop_name = f"{image_id}_crop{crop_idx}"
-    crop_img.save(os.path.join(OUTPUT_DIR, "images", f"{crop_name}.jpg"))
-    crop_layout.save(os.path.join(OUTPUT_DIR, "layouts", f"{crop_name}.png"))
+    # 生成prompt
+    classes = [b[0] for b in boxes]
+    desc_parts = []
+    for cid in sorted(set(classes)):
+        count = classes.count(cid)
+        name = VISDRONE_CLASSES[cid]
+        desc_parts.append(f"{count} {name}{'s' if count > 1 else ''}")
+    left2right = sorted(boxes, key=lambda b: (b[1] + b[3]) / 2)
+    sequence = ", ".join([VISDRONE_CLASSES[b[0]] for b in left2right])
+    prompt = f"There are {', '.join(desc_parts)} in the image. From left to right: {sequence}."
 
     return {
-        "image_path": f"images/{crop_name}.jpg",
-        "layout_path": f"layouts/{crop_name}.png",
+        "image_path": img_path,
+        "layout_path": layout_path,
         "prompt": prompt
     }
 
-def main():
-    all_entries = []
-    label_files = [f for f in os.listdir(YOLO_LABELS_DIR) if f.endswith(".txt")]
+def recursive_crop(img, layout, boxes, crop_box, image_id, prefix):
+    """
+    递归裁剪主函数：
+    - 仅保留面积≥50%的目标
+    - 目标数≤10则保存
+    - 否则沿长边二分递归细分
+    - 无最小尺寸限制
+    """
+    cx1, cy1, cx2, cy2 = map(int, crop_box)
+    selected_boxes = get_boxes_in_crop(boxes, crop_box, threshold=0.5)
 
-    for label_file in tqdm(label_files):
-        image_id = label_file.replace(".txt", "")
-        label_path = os.path.join(YOLO_LABELS_DIR, label_file)
+    if len(selected_boxes) <= MAX_OBJECTS:
+        save_name = f"{image_id}_{prefix}"
+        return [save_crop(img, layout, crop_box, selected_boxes, save_name)]
+
+    width = cx2 - cx1
+    height = cy2 - cy1
+
+    results = []
+    if width >= height:
+        mid_x = (cx1 + cx2) // 2
+        left_crop = (cx1, cy1, mid_x, cy2)
+        right_crop = (mid_x, cy1, cx2, cy2)
+        results.extend(recursive_crop(img, layout, boxes, left_crop, image_id, prefix + "_0"))
+        results.extend(recursive_crop(img, layout, boxes, right_crop, image_id, prefix + "_1"))
+    else:
+        mid_y = (cy1 + cy2) // 2
+        top_crop = (cx1, cy1, cx2, mid_y)
+        bottom_crop = (cx1, mid_y, cx2, cy2)
+        results.extend(recursive_crop(img, layout, boxes, top_crop, image_id, prefix + "_0"))
+        results.extend(recursive_crop(img, layout, boxes, bottom_crop, image_id, prefix + "_1"))
+
+    return results
+
+def main():
+    all_data = []
+    for label_file in tqdm(os.listdir(YOLO_LABELS_DIR)):
+        if not label_file.endswith(".txt"):
+            continue
+
+        image_id = label_file[:-4]
         image_path = os.path.join(IMAGES_DIR, f"{image_id}.jpg")
+        label_path = os.path.join(YOLO_LABELS_DIR, label_file)
 
         if not os.path.exists(image_path):
             continue
 
         img = Image.open(image_path).convert("RGB")
-        w, h = img.size
+        boxes = load_yolo_boxes(label_path, *img.size)
 
-        raw_boxes = load_yolo_annotations(label_path)
-        abs_boxes = [yolo_to_absolute(box, w, h) for box in raw_boxes]
-
-        if not abs_boxes:
+        if not boxes:
             continue
 
-        # 根据标签生成layout图
-        layout = generate_layout_image(abs_boxes, w, h)
+        width, height = img.size
+        full_layout = generate_layout(boxes, width, height)
 
-        # 根据目标密度动态裁剪成不同大小的块
-        crops = split_into_dynamic_crops(abs_boxes, w, h)
+        # 初始裁剪区域是整张图
+        crop_box = (0, 0, width, height)
 
-        for i, crop_boxes in enumerate(crops):
-            entry = crop_and_save(img, layout, crop_boxes, i, image_id)
-            all_entries.append(entry)
+        results = recursive_crop(img, full_layout, boxes, crop_box, image_id, "0")
+        all_data.extend(results)
 
-    with open(PROMPT_JSONL, 'w') as f:
-        for entry in all_entries:
+    with open(PROMPT_JSONL, "w", encoding="utf-8") as f:
+        for entry in all_data:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    print(f"✅ Done. {len(all_entries)} crops saved to {OUTPUT_DIR}")
+    print(f"✅ 完成，生成裁剪块数量: {len(all_data)}")
 
 if __name__ == "__main__":
     main()
