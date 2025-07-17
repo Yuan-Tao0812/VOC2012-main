@@ -59,7 +59,7 @@ def generate_prompt_lines(yolo_dir, output_path):
 
                 sorted_objs = sorted(objs, key=lambda x: x[0])  # 按 x_center 排序
                 sequence = ", ".join(VISDRONE_CLASSES[cid] for _, cid in sorted_objs)
-                prompt = f"{summary_str} From left to right: {sequence}. visdrone style"
+                prompt = f"{summary_str} From left to right: {sequence}."
 
             line_obj = {
                 "image_path": f"{IMAGES_RELATIVE_DIR}/{image_id}.jpg",
