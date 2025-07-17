@@ -18,6 +18,8 @@ VISDRONE_CLASSES = [
 os.makedirs(os.path.join(OUTPUT_DIR, "images"), exist_ok=True)
 os.makedirs(os.path.join(OUTPUT_DIR, "layouts"), exist_ok=True)
 
+global_counter = 1  # ✅ 改动1：初始化全局图像编号计数器
+
 def load_yolo_boxes(label_path, img_w, img_h):
     boxes = []
     with open(label_path, 'r') as f:
@@ -34,28 +36,19 @@ def load_yolo_boxes(label_path, img_w, img_h):
     return boxes
 
 def get_ioa(box, crop_box):
-    """
-    计算目标框在裁剪框内的交叠比例（面积比）
-    """
     _, x1, y1, x2, y2 = box
     cx1, cy1, cx2, cy2 = crop_box
-
     inter_x1 = max(x1, cx1)
     inter_y1 = max(y1, cy1)
     inter_x2 = min(x2, cx2)
     inter_y2 = min(y2, cy2)
-
     inter_w = max(0, inter_x2 - inter_x1)
     inter_h = max(0, inter_y2 - inter_y1)
     inter_area = inter_w * inter_h
-
     box_area = (x2 - x1) * (y2 - y1)
     return inter_area / box_area if box_area > 0 else 0
 
 def get_boxes_in_crop(boxes, crop_box, threshold=0.5):
-    """
-    获取所有在crop_box中面积比例≥threshold的目标框，坐标转换为相对crop_box的坐标
-    """
     cx1, cy1, cx2, cy2 = crop_box
     selected = []
     for box in boxes:
@@ -70,9 +63,6 @@ def get_boxes_in_crop(boxes, crop_box, threshold=0.5):
     return selected
 
 def generate_layout(boxes, width, height):
-    """
-    生成布局图，只有目标对应区域画白色，背景黑色
-    """
     layout = Image.new("L", (width, height), 0)
     draw = ImageDraw.Draw(layout)
     for _, x1, y1, x2, y2 in boxes:
@@ -80,15 +70,11 @@ def generate_layout(boxes, width, height):
     return layout.convert("RGB")
 
 def save_crop(img, layout, crop_box, boxes, save_name):
-    """
-    裁剪原图和布局图，保存到磁盘
-    """
     cx1, cy1, cx2, cy2 = map(int, crop_box)
     crop_img = img.crop((cx1, cy1, cx2, cy2))
     crop_layout = generate_layout(boxes, cx2 - cx1, cy2 - cy1)
     crop_layout = crop_layout.crop((0, 0, cx2 - cx1, cy2 - cy1))
 
-    # 缩放到512x512
     crop_img = crop_img.resize((512, 512), Image.LANCZOS)
     crop_layout = crop_layout.resize((512, 512), Image.LANCZOS)
 
@@ -98,7 +84,6 @@ def save_crop(img, layout, crop_box, boxes, save_name):
     crop_img.save(os.path.join(OUTPUT_DIR, img_path))
     crop_layout.save(os.path.join(OUTPUT_DIR, layout_path))
 
-    # 生成prompt
     classes = [b[0] for b in boxes]
     desc_parts = []
     for cid in sorted(set(classes)):
@@ -116,18 +101,13 @@ def save_crop(img, layout, crop_box, boxes, save_name):
     }
 
 def recursive_crop(img, layout, boxes, crop_box, image_id, prefix):
-    """
-    递归裁剪主函数：
-    - 仅保留面积≥50%的目标
-    - 目标数≤10则保存
-    - 否则沿长边二分递归细分
-    - 无最小尺寸限制
-    """
     cx1, cy1, cx2, cy2 = map(int, crop_box)
     selected_boxes = get_boxes_in_crop(boxes, crop_box, threshold=0.5)
 
     if len(selected_boxes) <= MAX_OBJECTS:
-        save_name = f"{image_id}_{prefix}"
+        global global_counter  # ✅ 改动2：使用全局唯一编号
+        save_name = f"{global_counter:06d}"  # change
+        global_counter += 1  # change
         return [save_crop(img, layout, crop_box, selected_boxes, save_name)]
 
     width = cx2 - cx1
@@ -171,17 +151,23 @@ def main():
         width, height = img.size
         full_layout = generate_layout(boxes, width, height)
 
-        # 初始裁剪区域是整张图
         crop_box = (0, 0, width, height)
-
         results = recursive_crop(img, full_layout, boxes, crop_box, image_id, "0")
         all_data.extend(results)
 
-    with open(PROMPT_JSONL, "w", encoding="utf-8") as f:
-        for entry in all_data:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    print(f"[INFO] Saving {len(all_data)} prompts to {PROMPT_JSONL}")  # ✅ 改动3：打印路径和数量   change
 
-    print(f"✅ 完成，生成裁剪块数量: {len(all_data)}")
+    with open(PROMPT_JSONL, "w", encoding="utf-8") as f:
+        for i, entry in enumerate(all_data):  # ✅ 改动4：增加异常捕获和定位
+            try:  # change
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")  # change
+            except Exception as e:  # change
+                print(f"[ERROR] Failed to write entry #{i}: {e}")  # change
+                print("Entry:", entry)  # change
+        f.flush()  # ✅ 改动5：强制刷新缓冲区
+        os.fsync(f.fileno())  # ✅ 改动6：确保写入磁盘
+
+    print(f"✅ 完成，写入成功，共生成裁剪块数量: {len(all_data)}")  # ✅ 改动7：写入成功确认
 
 if __name__ == "__main__":
     main()
