@@ -100,7 +100,7 @@ with open(PROMPT_JSONL, "w") as jsonl_file:
         prompt = build_prompt(counter)
 
         # 保存 layout 和复制原图
-        layout_name = base + "_layout.png"
+        layout_name = base + ".png"
         layout.save(os.path.join(LAYOUTS_OUT, layout_name))
         shutil.copy(img_path, os.path.join(IMAGES_OUT, fname))
 
