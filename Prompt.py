@@ -111,4 +111,13 @@ with open(PROMPT_JSONL, "w") as jsonl_file:
             "prompt": prompt
         }) + "\n")
 
-print("✅ 所有图像处理完成，已生成 layout 和 prompt.jsonl。")
+print("所有图像处理完成，已生成 layout 和 prompt.jsonl。")
+# 数据统计：确保图像数量匹配
+num_images = len([f for f in os.listdir(IMAGES_OUT) if f.endswith(('.jpg'))])
+num_layouts = len([f for f in os.listdir(LAYOUTS_OUT) if f.endswith('.png')])
+with open(PROMPT_JSONL, 'r') as f:
+    num_prompts = sum(1 for _ in f)
+
+print(f"图像数量：{num_images}")
+print(f"Layout 数量：{num_layouts}")
+print(f"prompt.jsonl 行数：{num_prompts}")
