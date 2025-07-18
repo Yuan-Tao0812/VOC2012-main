@@ -94,6 +94,8 @@ def clean_fragments(layout_np, target_mask, color):
         layout_np[labeled == i] = (0, 0, 0)  # 填黑
 
 def main():
+    skipped_small_objects = 0  # 新增：统计跳过目标数量
+
     with open(PROMPT_JSONL, "w") as jsonl_file:
         # 用 tqdm 包装循环，显示进度
         for fname in tqdm(sorted(os.listdir(IMAGES_DIR)), desc="Processing images"):
@@ -123,6 +125,12 @@ def main():
                     if len(vals) != 5:
                         continue
                     cls, x1, y1, x2, y2 = yolo_to_box(vals, w, h)
+
+                    # 新增：跳过太小的目标（无法画边框）
+                    if x2 - x1 < 4 or y2 - y1 < 4:
+                        skipped_small_objects += 1
+                        continue
+
                     boxes.append((int(cls), (x1, y1, x2, y2)))
                     counter[int(cls)] += 1
 
@@ -179,6 +187,7 @@ def main():
     print(f"图像数量：{num_images}")
     print(f"Layout 数量：{num_layouts}")
     print(f"prompt.jsonl 行数：{num_prompts}")
+    print(f"跳过太小的目标：{skipped_small_objects} 个")  # 新增统计输出
 
 if __name__ == "__main__":
     main()
