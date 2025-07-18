@@ -3,6 +3,9 @@ import json
 import shutil
 from PIL import Image, ImageDraw
 from collections import Counter
+import numpy as np
+from scipy.ndimage import label
+from tqdm import tqdm  # 进度条库
 
 # === 配置路径 ===
 YOLO_LABELS_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-renamed/labels/"
@@ -13,7 +16,6 @@ IMAGES_OUT = os.path.join(OUTPUT_ROOT, "images")
 LAYOUTS_OUT = os.path.join(OUTPUT_ROOT, "layouts")
 PROMPT_JSONL = os.path.join(OUTPUT_ROOT, "prompt.jsonl")
 
-# 创建文件夹
 os.makedirs(IMAGES_OUT, exist_ok=True)
 os.makedirs(LAYOUTS_OUT, exist_ok=True)
 
@@ -50,74 +52,133 @@ def yolo_to_box(yolo_box, img_w, img_h):
     y1 = int((y - h/2) * img_h)
     x2 = int((x + w/2) * img_w)
     y2 = int((y + h/2) * img_h)
-    return cls, x1, y1, x2, y2
+    # 保证坐标在图像范围内
+    x1 = max(0, min(x1, img_w-1))
+    y1 = max(0, min(y1, img_h-1))
+    x2 = max(0, min(x2, img_w-1))
+    y2 = max(0, min(y2, img_h-1))
+    return int(cls), x1, y1, x2, y2
 
 def pluralize(word, count):
     return f"{count} {word}" if count == 1 else f"{count} {word}s"
 
 def build_prompt(counter):
-    parts = [pluralize(CATEGORY_NAMES[c], n) for c, n in counter.items()]
+    parts = [pluralize(CATEGORY_NAMES[c], n) for c, n in sorted(counter.items())]
     if not parts:
         return "There are no objects in the image."
     if len(parts) == 1:
         return f"There is {parts[0]} in the image."
     return f"There are {', '.join(parts[:-1])}, and {parts[-1]} in the image."
 
-# 写入 JSONL
-with open(PROMPT_JSONL, "w") as jsonl_file:
-    for fname in sorted(os.listdir(IMAGES_DIR)):
-        if not fname.endswith(('.jpg', '.png')):
+def add_black_border(draw, box, border=2):
+    x1, y1, x2, y2 = box
+    for i in range(border):
+        draw.rectangle([x1+i, y1+i, x2-i, y2-i], outline=(0, 0, 0))
+
+def clean_fragments(layout_np, target_mask, color):
+    """
+    对于目标的颜色区域 target_mask（二值掩码），
+    找到所有连通块，保留最大连通块，其它碎块擦黑
+    """
+    labeled, num = label(target_mask)
+    if num <= 1:
+        return  # 不用处理
+
+    areas = [(labeled == i).sum() for i in range(1, num+1)]
+    max_idx = np.argmax(areas) + 1  # 最大连通域标签
+
+    # 遍历所有碎块，擦黑
+    for i in range(1, num+1):
+        if i == max_idx:
             continue
+        layout_np[labeled == i] = (0, 0, 0)  # 填黑
 
-        base = os.path.splitext(fname)[0]
-        img_path = os.path.join(IMAGES_DIR, fname)
-        label_path = os.path.join(YOLO_LABELS_DIR, base + ".txt")
+def main():
+    with open(PROMPT_JSONL, "w") as jsonl_file:
+        # 用 tqdm 包装循环，显示进度
+        for fname in tqdm(sorted(os.listdir(IMAGES_DIR)), desc="Processing images"):
+            if not fname.lower().endswith(('.jpg', '.png')):
+                continue
 
-        if not os.path.exists(label_path):
-            continue
+            base = os.path.splitext(fname)[0]
+            img_path = os.path.join(IMAGES_DIR, fname)
+            label_path = os.path.join(YOLO_LABELS_DIR, base + ".txt")
 
-        # 加载图像
-        img = Image.open(img_path).convert("RGB")
-        w, h = img.size
+            if not os.path.exists(label_path):
+                print(f"跳过无标签文件: {fname}")
+                continue
 
-        # 创建 layout
-        layout = Image.new("RGB", (w, h), (0, 0, 0))
-        draw = ImageDraw.Draw(layout)
-        counter = Counter()
+            img = Image.open(img_path).convert("RGB")
+            w, h = img.size
 
-        # 读取标签并画图
-        with open(label_path, "r") as f:
-            for line in f:
-                vals = list(map(float, line.strip().split()))
-                if len(vals) != 5:
-                    continue
-                cls, x1, y1, x2, y2 = yolo_to_box(vals, w, h)
-                color = CATEGORY_COLORS.get(int(cls), (255, 255, 255))
-                draw.rectangle([x1, y1, x2, y2], fill=color)
-                counter[int(cls)] += 1
+            layout = Image.new("RGB", (w, h), (0, 0, 0))
+            draw = ImageDraw.Draw(layout)
+            counter = Counter()
 
-        # 构建prompt
-        prompt = build_prompt(counter)
+            # 读取所有目标框数据，先存列表，后面分块判断用
+            boxes = []
+            with open(label_path, "r") as f:
+                for line in f:
+                    vals = list(map(float, line.strip().split()))
+                    if len(vals) != 5:
+                        continue
+                    cls, x1, y1, x2, y2 = yolo_to_box(vals, w, h)
+                    boxes.append((int(cls), (x1, y1, x2, y2)))
+                    counter[int(cls)] += 1
 
-        # 保存 layout 和复制原图
-        layout_name = base + ".png"
-        layout.save(os.path.join(LAYOUTS_OUT, layout_name))
-        shutil.copy(img_path, os.path.join(IMAGES_OUT, fname))
+            layout_np = np.array(layout)
 
-        # 写一行 JSONL
-        jsonl_file.write(json.dumps({
-            "file_name": fname,
-            "layout_file": layout_name,
-            "prompt": prompt
-        }) + "\n")
+            # 画每个目标块，带黑框，并即时清理碎块
+            for cls, box in boxes:
+                color = CATEGORY_COLORS.get(cls, (255, 255, 255))
+                x1, y1, x2, y2 = box
 
-print("所有图像处理完成，已生成 layout 和 prompt.jsonl。")
-# 数据统计：确保图像数量匹配
-num_images = len([f for f in os.listdir(IMAGES_OUT) if f.endswith(('.jpg'))])
-num_layouts = len([f for f in os.listdir(LAYOUTS_OUT) if f.endswith('.png')])
-with open(PROMPT_JSONL, 'r') as f:
-    num_prompts = sum(1 for _ in f)
+                # 画色块
+                layout_np[y1:y2+1, x1:x2+1] = color
+                layout = Image.fromarray(layout_np)
+                draw = ImageDraw.Draw(layout)
 
-print(f"图像数量：{num_images}")
-print(f"Layout 数量：{num_layouts}")
-print(f"prompt.jsonl 行数：{num_prompts}")
+                # 画黑框，2像素宽
+                add_black_border(draw, box, border=2)
+
+                # 更新 numpy 数组
+                layout_np = np.array(layout)
+
+                # 生成当前目标颜色掩码（二值）
+                target_mask = np.all(layout_np == color, axis=2)
+
+                # 对碎块做清理，保留最大连通块，擦黑其他碎块
+                clean_fragments(layout_np, target_mask, color)
+
+                # 更新 layout 和 draw
+                layout = Image.fromarray(layout_np)
+                draw = ImageDraw.Draw(layout)
+
+            # 构建prompt
+            prompt = build_prompt(counter)
+
+            # 保存layout和复制原图
+            layout_name = base + ".png"
+            layout.save(os.path.join(LAYOUTS_OUT, layout_name))
+            shutil.copy(img_path, os.path.join(IMAGES_OUT, fname))
+
+            # 写jsonl一行
+            jsonl_file.write(json.dumps({
+                "file_name": fname,
+                "layout_file": layout_name,
+                "prompt": prompt
+            }) + "\n")
+
+    # 统计数据
+    num_images = len([f for f in os.listdir(IMAGES_OUT) if f.lower().endswith(('.jpg', '.png'))])
+    num_layouts = len([f for f in os.listdir(LAYOUTS_OUT) if f.lower().endswith('.png')])
+    with open(PROMPT_JSONL, 'r') as f:
+        num_prompts = sum(1 for _ in f)
+
+    print("所有图像处理完成，已生成 layout 和 prompt.jsonl。")
+    print(f"图像数量：{num_images}")
+    print(f"Layout 数量：{num_layouts}")
+    print(f"prompt.jsonl 行数：{num_prompts}")
+
+if __name__ == "__main__":
+    main()
