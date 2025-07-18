@@ -47,7 +47,7 @@ def build_prompt(counter):
         return f"There is {parts[0]} in the image."
     return f"There are {', '.join(parts[:-1])}, and {parts[-1]} in the image."
 
-def add_black_border(draw, box, border=5):
+def add_black_border(draw, box, border=4):
     x1, y1, x2, y2 = box
     for i in range(border):
         draw.rectangle([x1 + i, y1 + i, x2 - i, y2 - i], outline=(0, 0, 0))
@@ -98,7 +98,7 @@ def main():
                     if len(vals) != 5:
                         continue
                     cls, x1, y1, x2, y2 = yolo_to_box(vals, w, h)
-                    if x2 - x1 < 4 or y2 - y1 < 4:
+                    if x2 - x1 < 10 or y2 - y1 < 10:
                         skipped_small_objects += 1
                         continue
                     boxes.append((target_id, cls, (x1, y1, x2, y2)))
@@ -113,7 +113,7 @@ def main():
                 mask_map[y1:y2+1, x1:x2+1] = tid
                 layout = Image.fromarray(layout_np)
                 draw = ImageDraw.Draw(layout)
-                add_black_border(draw, box, border=5)
+                add_black_border(draw, box, border=4)
                 layout_np = np.array(layout)
                 mask_map[y1:y2+1, x1:x2+1][np.all(layout_np[y1:y2+1, x1:x2+1] == (0, 0, 0), axis=2)] = -1
 
