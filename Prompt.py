@@ -19,7 +19,6 @@ PROMPT_JSONL = os.path.join(OUTPUT_ROOT, "prompt.jsonl")
 os.makedirs(IMAGES_OUT, exist_ok=True)
 os.makedirs(LAYOUTS_OUT, exist_ok=True)
 
-# 类别颜色和名称
 CATEGORY_COLORS = {
     0: (255, 0, 0),      # pedestrian - 红
     1: (0, 255, 0),      # people - 绿
@@ -52,7 +51,6 @@ def yolo_to_box(yolo_box, img_w, img_h):
     y1 = int((y - h/2) * img_h)
     x2 = int((x + w/2) * img_w)
     y2 = int((y + h/2) * img_h)
-    # 保证坐标在图像范围内
     x1 = max(0, min(x1, img_w-1))
     y1 = max(0, min(y1, img_h-1))
     x2 = max(0, min(x2, img_w-1))
@@ -75,29 +73,33 @@ def add_black_border(draw, box, border=2):
     for i in range(border):
         draw.rectangle([x1+i, y1+i, x2-i, y2-i], outline=(0, 0, 0))
 
-def clean_fragments(layout_np, target_mask, color):
+def clean_fragments(layout_np, cls, color):
     """
-    对于目标的颜色区域 target_mask（二值掩码），
-    找到所有连通块，保留最大连通块，其它碎块擦黑
+    清理一个目标的碎片，只保留该目标最终显露的最大连通块。
+    参数:
+    - layout_np: np.array(H,W,3) 当前layout图
+    - cls: 目标类别编号（方便调试或扩展）
+    - color: 该目标对应的颜色
     """
+    # 找到所有当前layout中该颜色的像素点，即该目标的“最终显露区域”
+    target_mask = np.all(layout_np == color, axis=2)
     labeled, num = label(target_mask)
     if num <= 1:
-        return  # 不用处理
+        return  # 没有碎片或者只有一个连通块，直接返回
 
     areas = [(labeled == i).sum() for i in range(1, num+1)]
-    max_idx = np.argmax(areas) + 1  # 最大连通域标签
+    max_idx = np.argmax(areas) + 1  # 最大连通块编号
 
-    # 遍历所有碎块，擦黑
+    # 遍历所有连通块，除最大块外擦黑（0,0,0）
     for i in range(1, num+1):
         if i == max_idx:
             continue
-        layout_np[labeled == i] = (0, 0, 0)  # 填黑
+        layout_np[labeled == i] = (0, 0, 0)
 
 def main():
-    skipped_small_objects = 0  # 新增：统计跳过目标数量
+    skipped_small_objects = 0
 
     with open(PROMPT_JSONL, "w") as jsonl_file:
-        # 用 tqdm 包装循环，显示进度
         for fname in tqdm(sorted(os.listdir(IMAGES_DIR)), desc="Processing images"):
             if not fname.lower().endswith(('.jpg', '.png')):
                 continue
@@ -117,7 +119,6 @@ def main():
             draw = ImageDraw.Draw(layout)
             counter = Counter()
 
-            # 读取所有目标框数据，先存列表，后面分块判断用
             boxes = []
             with open(label_path, "r") as f:
                 for line in f:
@@ -126,7 +127,6 @@ def main():
                         continue
                     cls, x1, y1, x2, y2 = yolo_to_box(vals, w, h)
 
-                    # 新增：跳过太小的目标（无法画边框）
                     if x2 - x1 < 4 or y2 - y1 < 4:
                         skipped_small_objects += 1
                         continue
@@ -136,48 +136,41 @@ def main():
 
             layout_np = np.array(layout)
 
-            # 画每个目标块，带黑框，并即时清理碎块
+            # 先画色块，按boxes顺序画，后画的覆盖前画的
             for cls, box in boxes:
                 color = CATEGORY_COLORS.get(cls, (255, 255, 255))
                 x1, y1, x2, y2 = box
-
-                # 画色块
                 layout_np[y1:y2+1, x1:x2+1] = color
-                layout = Image.fromarray(layout_np)
-                draw = ImageDraw.Draw(layout)
 
-                # 画黑框，2像素宽
+            layout = Image.fromarray(layout_np)
+            draw = ImageDraw.Draw(layout)
+
+            # 画黑框
+            for cls, box in boxes:
                 add_black_border(draw, box, border=2)
 
-                # 更新 numpy 数组
-                layout_np = np.array(layout)
+            layout_np = np.array(layout)
 
-                # 生成当前目标颜色掩码（二值）
-                target_mask = np.all(layout_np == color, axis=2)
+            # **核心碎片清理逻辑：每个目标单独清理自己在最终layout中显露的碎片**
+            for cls, box in boxes:
+                color = CATEGORY_COLORS.get(cls, (255, 255, 255))
+                clean_fragments(layout_np, cls, color)
 
-                # 对碎块做清理，保留最大连通块，擦黑其他碎块
-                clean_fragments(layout_np, target_mask, color)
+            layout = Image.fromarray(layout_np)
+            draw = ImageDraw.Draw(layout)
 
-                # 更新 layout 和 draw
-                layout = Image.fromarray(layout_np)
-                draw = ImageDraw.Draw(layout)
-
-            # 构建prompt
             prompt = build_prompt(counter)
 
-            # 保存layout和复制原图
             layout_name = base + ".png"
             layout.save(os.path.join(LAYOUTS_OUT, layout_name))
             shutil.copy(img_path, os.path.join(IMAGES_OUT, fname))
 
-            # 写jsonl一行
             jsonl_file.write(json.dumps({
                 "file_name": fname,
                 "layout_file": layout_name,
                 "prompt": prompt
             }) + "\n")
 
-    # 统计数据
     num_images = len([f for f in os.listdir(IMAGES_OUT) if f.lower().endswith(('.jpg', '.png'))])
     num_layouts = len([f for f in os.listdir(LAYOUTS_OUT) if f.lower().endswith('.png')])
     with open(PROMPT_JSONL, 'r') as f:
@@ -187,7 +180,7 @@ def main():
     print(f"图像数量：{num_images}")
     print(f"Layout 数量：{num_layouts}")
     print(f"prompt.jsonl 行数：{num_prompts}")
-    print(f"跳过太小的目标：{skipped_small_objects} 个")  # 新增统计输出
+    print(f"跳过太小的目标：{skipped_small_objects} 个")
 
 if __name__ == "__main__":
     main()
