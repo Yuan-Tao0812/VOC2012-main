@@ -17,7 +17,7 @@ from diffusers.models.attention_processor import LoRAAttnProcessor
 from diffusers.training_utils import cast_training_params
 
 # === 配置参数 ===
-DATA_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train-split/"
+DATA_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/train/"
 PROMPT_FILE = "prompt.jsonl"
 OUTPUT_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/trained_lora_controlnet/"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
