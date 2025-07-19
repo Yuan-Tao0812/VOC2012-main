@@ -17,7 +17,7 @@ from diffusers.models.attention_processor import LoRAAttnProcessor
 from diffusers.training_utils import cast_training_params
 
 # === 配置参数 ===
-DATA_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train/"
+DATA_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train-split/"
 PROMPT_FILE = "prompt.jsonl"
 OUTPUT_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/trained_lora_controlnet/"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -26,8 +26,8 @@ os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 4
-EPOCHS = 50
-LR = 5e-5
+EPOCHS = 5
+LR = 1e-4
 MAX_TOKEN_LENGTH = 77
 IMAGE_SIZE = 512
 
@@ -50,19 +50,11 @@ unet_lora_config = LoraConfig(
     init_lora_weights="gaussian",
     target_modules=["to_q", "to_k", "to_v", "to_out.0"],  # 官方推荐组合
 )
-controlnet_lora_config = LoraConfig(
-    r=4,
-    lora_alpha=4,
-    init_lora_weights="gaussian",
-    target_modules=["to_q", "to_k", "to_v", "to_out.0"],
-)
 
 pipe.unet.add_adapter(unet_lora_config)
-pipe.controlnet.add_adapter(controlnet_lora_config)     # 新
 
 # === 确保 LoRA 参数用 float32 精度训练（防止混合精度引发不稳定） ===
 cast_training_params(pipe.unet, dtype=torch.float32)
-cast_training_params(pipe.controlnet, dtype=torch.float32)
 
 # 冻结所有参数 新
 pipe.unet.requires_grad_(False)
@@ -76,28 +68,20 @@ for proc in pipe.unet.attn_processors.values():   # 新
     for p in proc.parameters():
         if p.requires_grad:
             trainable_params.append(p)
-for proc in pipe.controlnet.attn_processors.values():
-    for p in proc.parameters():
-        if p.requires_grad:
-            trainable_params.append(p)
 trainable_params += list(pipe.text_encoder.parameters())
 # 参数检查
-print("✅ 参数检查：")
+print("参数检查：")
 for name, param in pipe.unet.named_parameters():
     if param.requires_grad:
         print(f"[UNet] 训练参数: {name} - {param.shape}")
-for name, param in pipe.controlnet.named_parameters():
-    if param.requires_grad:
-        print(f"[ControlNet] 训练参数: {name} - {param.shape}")
 for name, param in pipe.text_encoder.named_parameters():
     if param.requires_grad:
         print(f"[TextEncoder] 训练参数: {name} - {param.shape}")
 optimizer = torch.optim.AdamW(trainable_params, lr=LR)
 trainable_count = sum(p.numel() for p in trainable_params if p.requires_grad)
-print(f"🧮 Optimizer 中可训练参数总数: {trainable_count}")    # 新
+print(f"Optimizer 中可训练参数总数: {trainable_count}")    # 新
 
 pipe.unet.train()
-pipe.controlnet.train()
 
 # === 加载 Tokenizer ===
 tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
@@ -161,7 +145,6 @@ for epoch in range(EPOCHS, 0, -1):
 # === 训练循环 ===
 for epoch in range(start_epoch, EPOCHS+1):
     pipe.unet.train()
-    pipe.controlnet.train()
     pipe.text_encoder.train()
 
     loop = tqdm(dataloader, desc=f"Epoch {epoch}/{EPOCHS}")
@@ -180,8 +163,9 @@ for epoch in range(start_epoch, EPOCHS+1):
         encoder_hidden_states = pipe.text_encoder(input_ids=input_ids, attention_mask=attention_mask)[0].to(dtype=torch.float32).to(DEVICE)
 
         # 编码图像至latent
-        latents = pipe.vae.encode(image).latent_dist.sample().to(DEVICE)
-        latents = latents * pipe.vae.config.scaling_factor
+        with torch.no_grad():
+            latents = pipe.vae.encode(image).latent_dist.sample().to(DEVICE)
+            latents = latents * pipe.vae.config.scaling_factor
         latents = latents.to(dtype=torch.float32)
 
         # 采样随机时间步
@@ -220,9 +204,7 @@ for epoch in range(start_epoch, EPOCHS+1):
             if param.requires_grad and param.grad is not None:
                 print(f"📈 梯度检查: {name} 的梯度均值: {param.grad.abs().mean().item():.6f}")
                 break   # 新
-        torch.nn.utils.clip_grad_norm_(list(pipe.unet.parameters()) +
-                                       list(pipe.controlnet.parameters()) +
-                                       list(pipe.text_encoder.parameters()), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(list(pipe.unet.parameters()) + list(pipe.text_encoder.parameters()), max_norm=1.0)
         optimizer.step()
         total_loss += loss.item()
         step_count += 1
