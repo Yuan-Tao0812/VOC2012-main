@@ -98,11 +98,9 @@ class VisDroneControlNetDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         item = self.entries[idx]
         image = Image.open(os.path.join(self.root_dir, item["image"])).convert("RGB")
-        layout = Image.open(os.path.join(self.root_dir, item["layout"])).convert("RGB")
 
         if self.transform:
             image = self.transform(image)
-            layout = self.transform(layout)
 
         tokenized = self.tokenizer(
             item["prompt"],
@@ -114,7 +112,6 @@ class VisDroneControlNetDataset(torch.utils.data.Dataset):
 
         return {
             "image": image,
-            "layout": layout,
             "input_ids": tokenized.input_ids[0],
             "attention_mask": tokenized.attention_mask[0],
         }
@@ -123,12 +120,10 @@ dataset = VisDroneControlNetDataset(DATA_DIR, PROMPT_FILE, tokenizer, transform=
 
 def collate_fn(examples):
     pixel_values = torch.stack([ex["image"] for ex in examples])
-    layout_values = torch.stack([ex["layout"] for ex in examples])
     input_ids = torch.stack([ex["input_ids"] for ex in examples])
     attention_mask = torch.stack([ex["attention_mask"] for ex in examples])
     return {
         "pixel_values": pixel_values,
-        "layout_values": layout_values,
         "input_ids": input_ids,
         "attention_mask": attention_mask,
     }
@@ -170,7 +165,6 @@ for epoch in range(start_epoch, EPOCHS + 1):
         optimizer.zero_grad()
 
         image = batch["image"].to(DEVICE, dtype=weight_dtype)
-        layout = batch["layout"].to(DEVICE, dtype=weight_dtype)
         input_ids = batch["input_ids"].to(DEVICE)
         attention_mask = batch["attention_mask"].to(DEVICE)
 
