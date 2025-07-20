@@ -164,7 +164,7 @@ for epoch in range(start_epoch, EPOCHS + 1):
     for batch in loop:
         optimizer.zero_grad()
 
-        image = batch["image"].to(DEVICE, dtype=weight_dtype)
+        image = batch["pixel_values"].to(DEVICE, dtype=weight_dtype)
         input_ids = batch["input_ids"].to(DEVICE)
         attention_mask = batch["attention_mask"].to(DEVICE)
 
