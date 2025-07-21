@@ -34,7 +34,7 @@ os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 # 🔧 保守的优化参数 - 逐步提升
 BATCH_SIZE = 2
 EPOCHS = 12
-LR = 2e-4  # 🔧 适度提高：1e-4 → 2e-4 (只提高1倍)
+LR = 5e-4
 GRADIENT_ACCUMULATION_STEPS = 3  # 🔧 适度增加：2 → 3
 SCALE_LR = True  # 🔧 保持原有的学习率缩放
 MAX_TOKEN_LENGTH = 77
