@@ -18,7 +18,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tokenizer = CLIPTokenizer.from_pretrained(PRETRAINED_MODEL_PATH, subfolder="tokenizer")
 text_encoder = CLIPTextModel.from_pretrained(PRETRAINED_MODEL_PATH, subfolder="text_encoder").to(device)
 vae = AutoencoderKL.from_pretrained(PRETRAINED_MODEL_PATH, subfolder="vae").to(device)
-unet = UNet2DConditionModel.from_pretrained(UNET_PATH).to(device)
+unet = UNet2DConditionModel.from_pretrained(PRETRAINED_MODEL_PATH, subfolder="unet").to(device)
 scheduler = DDIMScheduler.from_pretrained(PRETRAINED_MODEL_PATH, subfolder="scheduler")
 
 # 编写 prompt

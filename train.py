@@ -54,7 +54,7 @@ unet_lora_config = LoraConfig(
 )
 
 text_encoder.to(DEVICE, dtype=weight_dtype)
-unet.to(DEVICE, dtype=weight_dtype)
+unet = unet.to(DEVICE, dtype=weight_dtype)
 vae.to(DEVICE, dtype=weight_dtype)
 
 unet.add_adapter(unet_lora_config)
@@ -165,10 +165,10 @@ for epoch in range(EPOCHS, 0, -1):
         start_epoch = epoch + 1
         break
 
-accelerator = Accelerator()
-unet, optimizer, dataloader, lr_scheduler = accelerator.prepare(
-        unet, optimizer, dataloader, lr_scheduler
-    )
+#accelerator = Accelerator()
+#unet, optimizer, dataloader, lr_scheduler = accelerator.prepare(
+#        unet, optimizer, dataloader, lr_scheduler
+#    )
 
 # 记录某个LoRA参数训练前后的均值，验证参数是否发生变化
 def get_sample_lora_param_mean(model):
@@ -230,12 +230,12 @@ for epoch in range(start_epoch, EPOCHS + 1):
         print(f"警告：Epoch {epoch} LoRA参数均值无变化，训练可能未生效！")
 
     if epoch == EPOCHS:
-        unet_to_save = accelerator.unwrap_model(unet)
-        unet_to_save.save_pretrained(os.path.join(OUTPUT_DIR, "unet"))
+        #unet_to_save = accelerator.unwrap_model(unet)
+        unet.save_pretrained(os.path.join(OUTPUT_DIR, "unet"))
         torch.save(optimizer.state_dict(), os.path.join(OUTPUT_DIR, "optimizer.pt"))
     else:
-        unet_to_save = accelerator.unwrap_model(unet)
-        unet_to_save.save_pretrained(os.path.join(CHECKPOINT_DIR, f"unet_epoch_{epoch}"))
+        #unet_to_save = accelerator.unwrap_model(unet)
+        unet.save_pretrained(os.path.join(CHECKPOINT_DIR, f"unet_epoch_{epoch}"))
         torch.save(optimizer.state_dict(), os.path.join(CHECKPOINT_DIR, f"optimizer_epoch_{epoch}.pt"))
 
 plt.figure(figsize=(10, 5))
