@@ -160,7 +160,8 @@ for epoch in range(EPOCHS, 0, -1):
         print(f"恢复 epoch {epoch} 的检查点...")
         unet = UNet2DConditionModel.from_pretrained(unet_path)
         unet.add_adapter(unet_lora_config)
-        unet.to_empty(DEVICE, dtype=weight_dtype)
+        unet = unet.to_empty(DEVICE)
+        unet = unet.to(dtype=weight_dtype)
         optimizer.load_state_dict(torch.load(optimizer_path, map_location=DEVICE))
         start_epoch = epoch + 1
         break
