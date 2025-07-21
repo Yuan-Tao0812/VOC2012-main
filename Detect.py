@@ -22,7 +22,7 @@ unet = UNet2DConditionModel.from_pretrained(PRETRAINED_MODEL_PATH, subfolder="un
 scheduler = DDIMScheduler.from_pretrained(PRETRAINED_MODEL_PATH, subfolder="scheduler")
 
 # 编写 prompt
-prompt = "There are 5 pedestrians, 5 peoples, 5 cars, 5 vans, 5 trucks, and 5 awning-tricycle in the image."
+prompt = "There are 1 pedestrians, 1 peoples, 1 cars, 1 vans, 1 trucks, and 1 awning-tricycle in the image."
 max_length = tokenizer.model_max_length
 text_inputs = tokenizer(prompt, padding="max_length", max_length=max_length, return_tensors="pt")
 input_ids = text_inputs.input_ids.to(device)
