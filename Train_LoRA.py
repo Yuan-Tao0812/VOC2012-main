@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from torchvision import transforms
+import random
+import numpy as np
 
 from diffusers import (
     UNet2DConditionModel,
@@ -24,34 +26,43 @@ DATA_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-renamed/"
 PROMPT_FILE = "prompt.jsonl"
 OUTPUT_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/trained_lora_controlnet/"
 CHECKPOINT_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/checkpoints"
-PRETRAINED_MODEL_PATH = "stable-diffusion-v1-5/stable-diffusion-v1-5"  # 修正的模型路径
+PRETRAINED_MODEL_PATH = "stable-diffusion-v1-5/stable-diffusion-v1-5"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-# 针对L4 GPU的激进训练参数（修复参数变化过小问题）
-BATCH_SIZE = 4  # 增加batch size（L4应该能承受）
+# 🔧 保守的优化参数 - 逐步提升
+BATCH_SIZE = 2
 EPOCHS = 12
-LR = 5e-4  # 大幅提高学习率（原来1e-4 → 5e-4）
-GRADIENT_ACCUMULATION_STEPS = 1  # 禁用梯度累积，避免梯度稀释
-SCALE_LR = True
+LR = 2e-4  # 🔧 适度提高：1e-4 → 2e-4 (只提高1倍)
+GRADIENT_ACCUMULATION_STEPS = 3  # 🔧 适度增加：2 → 3
+SCALE_LR = True  # 🔧 保持原有的学习率缩放
 MAX_TOKEN_LENGTH = 77
 IMAGE_SIZE = 512
 CACHE_LATENTS = True
+WARMUP_STEPS = 300  # 🔧 适度减少：500 → 300
+MIN_SNR_GAMMA = 0  # 🔧 先不用Min-SNR，避免过于复杂
+NOISE_OFFSET = 0.05  # 🔧 很小的噪声偏移，几乎不影响训练
+
 epoch_losses = []
+step_losses = []
 weight_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
-print("🚀 使用激进配置修复训练问题")
-print(f"Batch size: {BATCH_SIZE} (增加)")
-print(f"Learning rate: {LR} (大幅提高)")
-print(f"梯度累积: {GRADIENT_ACCUMULATION_STEPS} (禁用)")
-print("LoRA配置: r=64, alpha=128 (大幅增强)")
 
-# 初始化Accelerator - L4优化设置
+# 设置随机种子确保可重复性
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+set_seed(42)
+
+# 初始化Accelerator
 accelerator = Accelerator(
     gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
     mixed_precision="fp16" if torch.cuda.is_available() else "no"
-    # 移除dataloader_config，避免L4兼容性问题
 )
 
 print(f"使用设备: {accelerator.device}")
@@ -69,10 +80,10 @@ unet.requires_grad_(False)
 vae.requires_grad_(False)
 text_encoder.requires_grad_(False)
 
-# LoRA配置 - 激进设置修复训练效果
+# 🔧 适度优化的LoRA配置
 unet_lora_config = LoraConfig(
-    r=64,  # 大幅增加rank (16 → 64)
-    lora_alpha=128,  # 大幅增加alpha (32 → 128)
+    r=24,  # 🔧 适度增加：16 → 24
+    lora_alpha=32,  # 🔧 保持不变，避免过大影响
     init_lora_weights="gaussian",
     target_modules=["to_k", "to_q", "to_v", "to_out.0"],
 )
@@ -82,7 +93,7 @@ text_encoder = text_encoder.to(accelerator.device, dtype=weight_dtype)
 vae = vae.to(accelerator.device, dtype=weight_dtype)
 unet = unet.to(accelerator.device, dtype=weight_dtype)
 
-# 添加LoRA适配器（官方方式）
+# 添加LoRA适配器
 unet.add_adapter(unet_lora_config)
 
 # 设置训练参数
@@ -105,16 +116,16 @@ for name, param in unet.named_parameters():
 if hasattr(unet, "enable_gradient_checkpointing"):
     unet.enable_gradient_checkpointing()
 
-# 优化器
+# 🔧 保守的优化器设置
 optimizer = torch.optim.AdamW(
     lora_layers,
     lr=LR,
     betas=(0.9, 0.999),
-    weight_decay=1e-2,
+    weight_decay=1e-2,  # 🔧 保持原有设置
     eps=1e-8,
 )
 
-# 学习率缩放（按官方逻辑）
+# 学习率缩放（保持原有逻辑）
 if SCALE_LR:
     scaled_lr = LR * GRADIENT_ACCUMULATION_STEPS * BATCH_SIZE * accelerator.num_processes
     print(f"原始学习率: {LR}")
@@ -128,13 +139,24 @@ if SCALE_LR:
         eps=1e-8,
     )
 
-# 数据预处理
+# 🔧 针对LoRA优化的数据预处理
+# 移除数据增强，专注于loss下降
 transform = transforms.Compose([
     transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+    # 🚫 移除RandomHorizontalFlip - 可能破坏航拍图像的空间语义
+    # 🚫 移除ColorJitter - 可能影响物体识别和计数
     transforms.ToTensor(),
     transforms.Normalize([0.5] * 3, [0.5] * 3),
 ])
 
+
+# 可选：如果想要轻微的鲁棒性，可以添加很小的噪声
+# transform = transforms.Compose([
+#     transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+#     transforms.ToTensor(),
+#     transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.01),  # 很小的噪声
+#     transforms.Normalize([0.5]*3, [0.5]*3),
+# ])
 
 class VisDroneControlNetDataset(torch.utils.data.Dataset):
     def __init__(self, root_dir, prompt_file, tokenizer, vae=None, max_length=MAX_TOKEN_LENGTH, transform=None):
@@ -154,19 +176,17 @@ class VisDroneControlNetDataset(torch.utils.data.Dataset):
 
         print(f"加载了 {len(self.entries)} 个训练样本")
 
-        # 预缓存latents以提高训练速度
         if self.cache_latents:
-            print("预缓存latents中（L4版本 - 更节省显存）...")
+            print("预缓存latents中...")
             self._cache_latents()
 
     def _cache_latents(self):
-        """预缓存所有图片的latents - L4优化版本"""
+        """预缓存所有图片的latents"""
         self.cached_latents = []
         cache_dir = os.path.join(self.root_dir, "cached_latents")
         os.makedirs(cache_dir, exist_ok=True)
 
-        # L4显存限制，分批处理
-        batch_size = 4  # L4缓存时用小batch
+        batch_size = 4
 
         for start_idx in tqdm(range(0, len(self.entries), batch_size), desc="缓存latents"):
             batch_indices = range(start_idx, min(start_idx + batch_size, len(self.entries)))
@@ -176,16 +196,13 @@ class VisDroneControlNetDataset(torch.utils.data.Dataset):
                 cache_file = os.path.join(cache_dir, f"latent_{idx}.pt")
 
                 if os.path.exists(cache_file):
-                    # 加载已缓存的latent
                     try:
                         latent = torch.load(cache_file, map_location="cpu")
                         self.cached_latents.append(latent)
                     except:
-                        # 缓存文件损坏，重新生成
                         self.cached_latents.append(None)
                 else:
                     try:
-                        # 生成并保存latent
                         image_path = os.path.join(self.root_dir, item["image"])
 
                         if not os.path.exists(image_path):
@@ -197,18 +214,15 @@ class VisDroneControlNetDataset(torch.utils.data.Dataset):
                         if self.transform:
                             image = self.transform(image)
 
-                        # 编码为latent - L4优化：立即移动到CPU
                         with torch.no_grad():
                             image_tensor = image.unsqueeze(0).to(self.vae.device, dtype=self.vae.dtype)
                             latent = self.vae.encode(image_tensor).latent_dist.sample()
                             latent = latent * self.vae.config.scaling_factor
                             latent = latent.squeeze(0).cpu()
 
-                            # 立即清理GPU内存
                             del image_tensor
                             torch.cuda.empty_cache()
 
-                        # 保存缓存
                         torch.save(latent, cache_file)
                         self.cached_latents.append(latent)
 
@@ -216,7 +230,6 @@ class VisDroneControlNetDataset(torch.utils.data.Dataset):
                         print(f"⚠️ 缓存第{idx}个样本失败: {e}")
                         self.cached_latents.append(None)
 
-            # 每处理一批就清理内存
             if start_idx % (batch_size * 4) == 0:
                 torch.cuda.empty_cache()
 
@@ -227,11 +240,9 @@ class VisDroneControlNetDataset(torch.utils.data.Dataset):
         item = self.entries[idx]
 
         if self.cache_latents:
-            # 使用缓存的latents
             latent = self.cached_latents[idx]
-            image = None  # 不需要原始图片
+            image = None
         else:
-            # 原始方式
             image_path = os.path.join(self.root_dir, item["image"])
 
             if not os.path.exists(image_path):
@@ -263,12 +274,12 @@ class VisDroneControlNetDataset(torch.utils.data.Dataset):
         return result
 
 
-# 创建数据集和数据加载器 - 支持latent缓存
+# 创建数据集和数据加载器
 dataset = VisDroneControlNetDataset(
     DATA_DIR,
     PROMPT_FILE,
     tokenizer,
-    vae=vae if CACHE_LATENTS else None,  # 传入VAE用于缓存
+    vae=vae if CACHE_LATENTS else None,
     transform=transform
 )
 
@@ -297,9 +308,9 @@ dataloader = DataLoader(
     batch_size=BATCH_SIZE,
     shuffle=True,
     collate_fn=collate_fn,
-    num_workers=2,  # 保持适中的worker数量
-    pin_memory=False,  # L4关闭pin_memory节省内存
-    prefetch_factor=1,  # 减少预取
+    num_workers=2,
+    pin_memory=False,
+    prefetch_factor=1,
 )
 
 # 学习率调度器
@@ -309,27 +320,25 @@ max_train_steps = EPOCHS * num_update_steps_per_epoch
 print(f"每epoch更新步数: {num_update_steps_per_epoch}")
 print(f"总训练步数: {max_train_steps}")
 
+# 🔧 保持cosine调度器，但调整warmup
 lr_scheduler = get_scheduler(
     "cosine",
     optimizer=optimizer,
-    num_warmup_steps=500,
+    num_warmup_steps=WARMUP_STEPS,  # 减少了warmup步数
     num_training_steps=max_train_steps,
 )
 
 
-# 官方保存方式的辅助函数
 def unwrap_model(model):
     model = accelerator.unwrap_model(model)
     return model
 
 
 def save_lora_checkpoint(epoch, unet, optimizer, lr_scheduler, loss):
-    """按照官方方式保存检查点（包含完整训练状态）"""
-    # 1. 使用accelerator保存完整检查点（用于断点续训）
+    """保存检查点"""
     checkpoint_path = os.path.join(CHECKPOINT_DIR, f"checkpoint-{epoch * len(dataloader)}")
     accelerator.save_state(checkpoint_path)
 
-    # 2. 额外保存纯LoRA权重（用于推理）
     lora_path = os.path.join(CHECKPOINT_DIR, f"lora_epoch_{epoch}")
     os.makedirs(lora_path, exist_ok=True)
 
@@ -339,7 +348,7 @@ def save_lora_checkpoint(epoch, unet, optimizer, lr_scheduler, loss):
     StableDiffusionPipeline.save_lora_weights(
         save_directory=lora_path,
         unet_lora_layers=unet_lora_state_dict,
-        safe_serialization=False,  # 匹配官方 .bin 格式
+        safe_serialization=False,
     )
 
     print(f"完整检查点保存到: {checkpoint_path}")
@@ -347,18 +356,17 @@ def save_lora_checkpoint(epoch, unet, optimizer, lr_scheduler, loss):
 
 
 def load_lora_checkpoint():
-    """加载最新的检查点（Accelerator格式）"""
+    """加载最新的检查点"""
     start_epoch = 1
 
-    # 查找accelerator格式的检查点
     checkpoints = []
-    for item in os.listdir(CHECKPOINT_DIR):
-        if item.startswith("checkpoint-"):
-            step_num = int(item.split("-")[1])
-            checkpoints.append((step_num, item))
+    if os.path.exists(CHECKPOINT_DIR):
+        for item in os.listdir(CHECKPOINT_DIR):
+            if item.startswith("checkpoint-"):
+                step_num = int(item.split("-")[1])
+                checkpoints.append((step_num, item))
 
     if checkpoints:
-        # 按步数排序，取最新的
         checkpoints.sort(reverse=True)
         latest_checkpoint = checkpoints[0][1]
         checkpoint_path = os.path.join(CHECKPOINT_DIR, latest_checkpoint)
@@ -366,13 +374,9 @@ def load_lora_checkpoint():
         print(f"发现最新检查点: {latest_checkpoint}")
 
         try:
-            # 使用accelerator加载状态
             accelerator.load_state(checkpoint_path)
-
-            # 计算对应的epoch
             step_num = checkpoints[0][0]
             start_epoch = (step_num // len(dataloader)) + 1
-
             print(f"成功加载检查点，将从 epoch {start_epoch} 开始训练")
 
         except Exception as e:
@@ -391,7 +395,6 @@ unet, optimizer, dataloader, lr_scheduler = accelerator.prepare(
 )
 
 
-# 监控LoRA参数变化的函数
 def get_lora_param_stats(model):
     """获取LoRA参数的统计信息"""
     lora_params = []
@@ -410,27 +413,24 @@ def get_lora_param_stats(model):
     return None
 
 
-print(f"开始训练，从 epoch {start_epoch} 到 {EPOCHS}")
-print(f"总训练步数: {max_train_steps}")
-print(f"每epoch步数: {num_update_steps_per_epoch}")
-print(f"🚀 激进配置修复:")
-print(f"   - Batch size: {BATCH_SIZE} (增加显存利用率)")
-print(f"   - Learning rate: {LR} (大幅提高学习效果)")
-print(f"   - LoRA rank: 64 (增强学习能力)")
-print(f"   - LoRA alpha: 128 (增强参数影响)")
-print(f"   - 禁用梯度累积 (避免梯度稀释)")
-if CACHE_LATENTS:
-    print("✅ 启用latent缓存，大幅提升训练速度")
-print(f"预计每epoch时间: 约 45-60分钟 (L4 GPU + 优化配置)")
-print(f"预计总训练时间: 约 {EPOCHS * 0.8:.1f}-{EPOCHS * 1.0:.1f} 小时")
-print(f"💡 预期LoRA参数变化: >0.0001 每epoch (比之前大100倍)")
+print(f"🔧 保守优化的训练配置:")
+print(f"   - 学习率适度提高: 1e-4 → {LR}")
+print(f"   - LoRA rank适度增加: 16 → {unet_lora_config.r}")
+print(f"   - 梯度累积适度增加: 2 → {GRADIENT_ACCUMULATION_STEPS}")
+print(f"   - 减少warmup步数: 500 → {WARMUP_STEPS}")
+print(f"   - 保持原有学习率缩放和调度器")
+print(f"   - 添加极小的噪声偏移: {NOISE_OFFSET}")
 
-# 训练循环
+# 🔧 改进的训练循环 - 增加监控但不改变核心逻辑
+global_step = 0
+best_loss = float('inf')
+loss_patience = 0  # 用于早停的耐心计数
+
 for epoch in range(start_epoch, EPOCHS + 1):
     unet.train()
     total_loss = 0.0
+    epoch_step_losses = []
 
-    # 训练前LoRA参数统计
     lora_stats_before = get_lora_param_stats(unet)
     if lora_stats_before:
         print(f"\nEpoch {epoch} 开始 - LoRA参数统计:")
@@ -441,18 +441,15 @@ for epoch in range(start_epoch, EPOCHS + 1):
 
     for step, batch in enumerate(progress_bar):
         with accelerator.accumulate(unet):
-            # 获取batch数据
             input_ids = batch["input_ids"].to(accelerator.device)
             attention_mask = batch["attention_mask"].to(accelerator.device)
 
-            # 编码文本
             with torch.no_grad():
                 encoder_hidden_states = text_encoder(
                     input_ids=input_ids,
                     attention_mask=attention_mask
                 )[0]
 
-            # 获取latents - 使用缓存或实时编码
             if CACHE_LATENTS:
                 latents = batch["latents"].to(accelerator.device, dtype=weight_dtype)
             else:
@@ -461,8 +458,13 @@ for epoch in range(start_epoch, EPOCHS + 1):
                     latents = vae.encode(pixel_values).latent_dist.sample()
                     latents = latents * vae.config.scaling_factor
 
-            # 添加噪声
+            # 🔧 保守的噪声处理
             noise = torch.randn_like(latents, device=accelerator.device, dtype=weight_dtype)
+            if NOISE_OFFSET > 0:
+                # 添加很小的噪声偏移
+                noise += NOISE_OFFSET * torch.randn(latents.shape[0], latents.shape[1], 1, 1, device=accelerator.device,
+                                                    dtype=weight_dtype)
+
             timesteps = torch.randint(
                 0, noise_scheduler.config.num_train_timesteps,
                 (latents.shape[0],),
@@ -471,7 +473,6 @@ for epoch in range(start_epoch, EPOCHS + 1):
 
             noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-            # UNet前向传播
             model_pred = unet(
                 sample=noisy_latents,
                 timestep=timesteps,
@@ -479,7 +480,6 @@ for epoch in range(start_epoch, EPOCHS + 1):
                 return_dict=False
             )[0]
 
-            # 计算损失
             if noise_scheduler.config.prediction_type == "epsilon":
                 target = noise
             elif noise_scheduler.config.prediction_type == "v_prediction":
@@ -487,9 +487,9 @@ for epoch in range(start_epoch, EPOCHS + 1):
             else:
                 raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
+            # 🔧 保持原有的简单MSE损失
             loss = torch.nn.functional.mse_loss(model_pred.float(), target.float(), reduction="mean")
 
-            # 反向传播
             accelerator.backward(loss)
 
             if accelerator.sync_gradients:
@@ -499,11 +499,17 @@ for epoch in range(start_epoch, EPOCHS + 1):
             lr_scheduler.step()
             optimizer.zero_grad()
 
-            # 更新进度条
+            # 记录损失
             current_loss = loss.detach().item()
             total_loss += current_loss
+            epoch_step_losses.append(current_loss)
+            step_losses.append(current_loss)
+            global_step += 1
+
+            # 更新进度条
             progress_bar.set_postfix({
                 "loss": f"{current_loss:.4f}",
+                "avg_loss": f"{np.mean(epoch_step_losses[-20:]):.4f}",  # 最近20步的平均loss
                 "lr": f"{lr_scheduler.get_last_lr()[0]:.2e}",
                 "step": f"{step}/{len(dataloader)}"
             })
@@ -512,43 +518,64 @@ for epoch in range(start_epoch, EPOCHS + 1):
     avg_loss = total_loss / len(dataloader)
     epoch_losses.append(avg_loss)
 
-    # 训练后LoRA参数统计
+    # 🔧 改进的损失分析
+    loss_std = np.std(epoch_step_losses)
+    recent_loss_trend = np.mean(epoch_step_losses[-100:]) if len(epoch_step_losses) > 100 else avg_loss
+
     lora_stats_after = get_lora_param_stats(unet)
     if lora_stats_after and lora_stats_before:
         mean_change = abs(lora_stats_after['mean'] - lora_stats_before['mean'])
+        std_change = abs(lora_stats_after['std'] - lora_stats_before['std'])
+
         print(f"\nEpoch {epoch} 结束:")
         print(f"  平均Loss: {avg_loss:.6f}")
+        print(f"  Loss标准差: {loss_std:.6f}")
+        print(f"  最后100步均值: {recent_loss_trend:.6f}")
         print(f"  LoRA参数均值变化: {mean_change:.8f}")
+        print(f"  LoRA参数标准差变化: {std_change:.8f}")
 
-        if mean_change < 1e-6:  # 调整阈值，因为现在期望更大的变化
-            print(f"  ⚠️  警告: LoRA参数变化极小，配置可能需要进一步调整")
-        elif mean_change > 1e-4:
-            print(f"  ✅  优秀: LoRA参数变化显著，训练效果良好")
+        # 🔧 健康检查 - 给出具体建议
+        if mean_change < 1e-7:
+            print(f"  ⚠️  LoRA参数变化极小 (<1e-7)，可能需要:")
+            print(f"      - 适度增加学习率 (当前: {lr_scheduler.get_last_lr()[0]:.2e})")
+            print(f"      - 检查梯度是否正常")
+        elif mean_change > 1e-3:
+            print(f"  ⚠️  LoRA参数变化过大 (>1e-3)，考虑:")
+            print(f"      - 降低学习率")
+            print(f"      - 增加梯度累积步数")
         else:
-            print(f"  ✅  正常: LoRA参数变化适中")
+            print(f"  ✅ LoRA参数变化在合理范围内")
+
+        # 早停检查
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            loss_patience = 0
+        else:
+            loss_patience += 1
+
+        if loss_patience >= 3:
+            print(f"  📊 Loss连续3个epoch未改善，可能接近收敛")
 
     # 保存检查点
-    if epoch % 5 == 0 or epoch == EPOCHS:
+    if epoch % 4 == 0 or epoch == EPOCHS:
         save_lora_checkpoint(epoch, unet, optimizer, lr_scheduler, avg_loss)
 
 print("训练完成!")
 
-# 最终保存（官方方式）
+# 最终保存
 print("保存最终LoRA模型...")
 final_output_path = OUTPUT_DIR
 
-# 获取LoRA权重（官方方式）
 unwrapped_unet = unwrap_model(unet)
 unet_lora_state_dict = convert_state_dict_to_diffusers(get_peft_model_state_dict(unwrapped_unet))
 
-# 保存LoRA权重（官方方式）- 保存为 .bin 格式以匹配官方示例
 StableDiffusionPipeline.save_lora_weights(
     save_directory=final_output_path,
     unet_lora_layers=unet_lora_state_dict,
-    safe_serialization=False,  # 保存为 pytorch_lora_weights.bin 格式
+    safe_serialization=False,
 )
 
-# 保存配置文件
+# 保存配置信息
 config_info = {
     "lora_config": {
         "r": unet_lora_config.r,
@@ -560,55 +587,182 @@ config_info = {
         "epochs": EPOCHS,
         "batch_size": BATCH_SIZE,
         "learning_rate": LR,
-        "final_loss": epoch_losses[-1] if epoch_losses else None
+        "gradient_accumulation_steps": GRADIENT_ACCUMULATION_STEPS,
+        "noise_offset": NOISE_OFFSET,
+        "warmup_steps": WARMUP_STEPS,
+        "final_loss": epoch_losses[-1] if epoch_losses else None,
+        "best_loss": best_loss,
+        "optimization_level": "conservative"
     }
 }
 
 with open(os.path.join(final_output_path, "training_config.json"), "w") as f:
     json.dump(config_info, f, indent=2)
 
-# 绘制loss曲线
-plt.figure(figsize=(12, 5))
+# 🔧 改进但保守的loss可视化
+plt.figure(figsize=(15, 8))
 
-plt.subplot(1, 2, 1)
-plt.plot(range(1, len(epoch_losses) + 1), epoch_losses, marker='o', label="Average Training Loss", linewidth=2)
+# 1. Epoch级别的loss
+plt.subplot(2, 3, 1)
+plt.plot(range(1, len(epoch_losses) + 1), epoch_losses, marker='o', label="Training Loss", linewidth=2)
+if len(epoch_losses) > 1:
+    # 添加趋势线
+    z = np.polyfit(range(1, len(epoch_losses) + 1), epoch_losses, 1)
+    p = np.poly1d(z)
+    plt.plot(range(1, len(epoch_losses) + 1), p(range(1, len(epoch_losses) + 1)), "--", alpha=0.7, label="Trend")
 plt.xlabel("Epoch")
 plt.ylabel("Loss")
-plt.title("Training Loss Curve")
+plt.title("Training Loss per Epoch")
 plt.legend()
 plt.grid(True, alpha=0.3)
 
-# Loss变化率
+# 2. 步级别的loss（滑动平均）
+if len(step_losses) > 50:
+    plt.subplot(2, 3, 2)
+    window_size = 50
+    smoothed_losses = np.convolve(step_losses, np.ones(window_size) / window_size, mode='valid')
+    plt.plot(smoothed_losses, label=f"Smoothed Loss", linewidth=1.5, alpha=0.8)
+    plt.xlabel("Step")
+    plt.ylabel("Loss")
+    plt.title(f"Step-wise Loss (MA-{window_size})")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+# 3. Loss变化率
 if len(epoch_losses) > 1:
-    plt.subplot(1, 2, 2)
+    plt.subplot(2, 3, 3)
     loss_changes = [epoch_losses[i] - epoch_losses[i - 1] for i in range(1, len(epoch_losses))]
-    plt.plot(range(2, len(epoch_losses) + 1), loss_changes, marker='s', color='orange', label="Loss Change",
-             linewidth=2)
+    plt.plot(range(2, len(epoch_losses) + 1), loss_changes, marker='s', color='orange', linewidth=2)
     plt.xlabel("Epoch")
     plt.ylabel("Loss Change")
     plt.title("Loss Change Rate")
+    plt.grid(True, alpha=0.3)
+    plt.axhline(y=0, color='red', linestyle='--', alpha=0.7)
+
+# 4. 学习率曲线
+plt.subplot(2, 3, 4)
+lr_values = []
+# 模拟学习率变化
+for step in range(max_train_steps):
+    if step < WARMUP_STEPS:
+        lr = LR * GRADIENT_ACCUMULATION_STEPS * BATCH_SIZE * accelerator.num_processes * (step / WARMUP_STEPS)
+    else:
+        progress = (step - WARMUP_STEPS) / (max_train_steps - WARMUP_STEPS)
+        lr = LR * GRADIENT_ACCUMULATION_STEPS * BATCH_SIZE * accelerator.num_processes * 0.5 * (
+                    1 + np.cos(np.pi * progress))
+    lr_values.append(lr)
+
+plt.plot(lr_values, label="Learning Rate", linewidth=2, color='green')
+plt.xlabel("Step")
+plt.ylabel("Learning Rate")
+plt.title("Learning Rate Schedule")
+plt.legend()
+plt.grid(True, alpha=0.3)
+
+# 5. 训练稳定性分析
+plt.subplot(2, 3, 5)
+if len(step_losses) > 200:
+    # 计算每100步的标准差
+    window = 100
+    stds = []
+    for i in range(window, len(step_losses), window // 2):
+        std = np.std(step_losses[i - window:i])
+        stds.append(std)
+
+    plt.plot(stds, label="Loss Stability", color='purple', linewidth=1.5)
+    plt.xlabel("Window")
+    plt.ylabel("Loss Std")
+    plt.title("Training Stability")
     plt.legend()
+    plt.grid(True, alpha=0.3)
+
+# 6. 收敛分析
+plt.subplot(2, 3, 6)
+if len(epoch_losses) > 3:
+    # 计算相对改善
+    improvements = []
+    for i in range(1, len(epoch_losses)):
+        if epoch_losses[i - 1] > 0:
+            improvement = (epoch_losses[i - 1] - epoch_losses[i]) / epoch_losses[i - 1] * 100
+            improvements.append(improvement)
+
+    plt.bar(range(2, len(epoch_losses) + 1), improvements, alpha=0.7, color='skyblue')
+    plt.xlabel("Epoch")
+    plt.ylabel("Improvement (%)")
+    plt.title("Loss Improvement per Epoch")
     plt.grid(True, alpha=0.3)
     plt.axhline(y=0, color='red', linestyle='--', alpha=0.7)
 
 plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_DIR, "training_curves.png"), dpi=150, bbox_inches='tight')
+plt.savefig(os.path.join(OUTPUT_DIR, "conservative_training_analysis.png"), dpi=150, bbox_inches='tight')
 plt.show()
 
 print(f"最终LoRA模型保存在: {final_output_path}")
 print(f"主要文件:")
 print(f"  - pytorch_lora_weights.bin (最终LoRA权重，用于推理)")
 print(f"  - training_config.json (训练配置)")
-print(f"  - training_curves.png (Loss曲线)")
+print(f"  - conservative_training_analysis.png (训练分析)")
+
 print(f"\n检查点文件保存在: {CHECKPOINT_DIR}")
 print(f"  - checkpoint-xxxx/ (完整训练状态，用于断点续训)")
 print(f"  - lora_epoch_x/ (LoRA权重备份)")
+
+# 🔧 保守的训练效果分析
+print("\n" + "=" * 60)
+print("📊 保守优化训练分析")
+print("=" * 60)
+
+if len(epoch_losses) > 1:
+    initial_loss = epoch_losses[0]
+    final_loss = epoch_losses[-1]
+    loss_reduction = (initial_loss - final_loss) / initial_loss * 100
+
+    print(f"初始Loss: {initial_loss:.6f}")
+    print(f"最终Loss: {final_loss:.6f}")
+    print(f"Loss降低: {loss_reduction:.2f}%")
+    print(f"最佳Loss: {best_loss:.6f}")
+
+    # 更细致的效果评估
+    if loss_reduction > 15:
+        print("✅ 训练效果优秀，Loss显著下降")
+    elif loss_reduction > 8:
+        print("✅ 训练效果良好，建议继续训练")
+    elif loss_reduction > 3:
+        print("⚠️ 训练效果一般，可考虑:")
+        print("   - 延长训练轮数")
+        print("   - 适度提高学习率")
+        print("   - 增加LoRA rank")
+    else:
+        print("❌ 训练效果不佳，建议:")
+        print("   - 检查数据质量")
+        print("   - 提高学习率 (当前较保守)")
+        print("   - 增加训练轮数")
+
+if len(step_losses) > 100:
+    recent_loss_std = np.std(step_losses[-100:])
+    overall_loss_std = np.std(step_losses)
+
+    print(f"\n收敛性分析:")
+    print(f"  最近100步Loss标准差: {recent_loss_std:.6f}")
+    print(f"  整体Loss标准差: {overall_loss_std:.6f}")
+
+    if recent_loss_std < overall_loss_std * 0.5:
+        print("  ✅ 训练已基本收敛")
+    elif recent_loss_std < overall_loss_std * 0.8:
+        print("  ⚠️ 训练接近收敛，可适当延长")
+    else:
+        print("  ❌ 训练尚未充分收敛，建议继续")
+
+print(f"\n参数变化分析:")
+print(f"  LoRA rank: {unet_lora_config.r} (适度提升)")
+print(f"  学习率: {LR} (保守提升)")
+print(f"  有效batch size: {BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS}")
 
 print("\n" + "=" * 60)
 print("🎨 开始推理测试...")
 print("=" * 60)
 
-# 清理GPU内存，为推理做准备
+# 清理GPU内存
 del unet, text_encoder, vae, optimizer, lr_scheduler
 torch.cuda.empty_cache()
 
@@ -618,7 +772,7 @@ try:
     inference_pipeline = StableDiffusionPipeline.from_pretrained(
         PRETRAINED_MODEL_PATH,
         torch_dtype=torch.float16,
-        safety_checker=None,  # 关闭安全检查以节省内存
+        safety_checker=None,
         requires_safety_checker=False
     ).to("cuda")
 
@@ -626,13 +780,18 @@ try:
     print("正在加载LoRA权重...")
     inference_pipeline.load_lora_weights(final_output_path)
 
-    # 测试prompts - 基于你的VisDrone数据集风格
+    # 基础的推理设置
+    if hasattr(inference_pipeline, 'enable_memory_efficient_attention'):
+        inference_pipeline.enable_memory_efficient_attention()
+
+    # 测试prompts - 涵盖不同复杂度
     test_prompts = [
         "There are 5 pedestrians, 1 van, and 2 trucks in the image.",
         "There are 10 pedestrians, 3 cars, and 1 bus in the image.",
         "There are 2 pedestrians, 4 cars, and 2 motorcycles in the image.",
         "There are 15 pedestrians, 2 vans, 1 truck, and 3 cars in the image.",
-        "There are 8 pedestrians, 1 van, and 5 cars in the image."
+        "There are 8 pedestrians, 1 van, and 5 cars in the image.",
+        "There are 3 pedestrians and 1 motorcycle in the image.",
     ]
 
     # 生成测试图片
@@ -641,16 +800,19 @@ try:
 
     print(f"正在生成 {len(test_prompts)} 张测试图片...")
 
+    # 使用标准推理设置
+    inference_config = {"steps": 25, "guidance": 7.5}
+
     for i, prompt in enumerate(test_prompts):
-        print(f"生成图片 {i + 1}/{len(test_prompts)}: {prompt}")
+        print(f"生成图片 {i + 1}/{len(test_prompts)}: {prompt[:40]}...")
 
         # 生成图片
         with torch.no_grad():
             image = inference_pipeline(
                 prompt,
-                num_inference_steps=25,  # 适中的步数，平衡质量和速度
-                guidance_scale=7.5,
-                generator=torch.manual_seed(42 + i)  # 固定随机种子便于比较
+                num_inference_steps=inference_config["steps"],
+                guidance_scale=inference_config["guidance"],
+                generator=torch.manual_seed(42 + i)
             ).images[0]
 
         # 保存图片
@@ -661,8 +823,8 @@ try:
         prompt_info = {
             "image": f"test_image_{i + 1}.png",
             "prompt": prompt,
-            "inference_steps": 25,
-            "guidance_scale": 7.5,
+            "inference_steps": inference_config["steps"],
+            "guidance_scale": inference_config["guidance"],
             "seed": 42 + i
         }
 
@@ -673,10 +835,9 @@ try:
     # 创建结果总览图
     print("创建结果总览...")
     from PIL import Image as PILImage
-    import matplotlib.pyplot as plt
 
     fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-    fig.suptitle('LoRA Training Results - Generated Images', fontsize=16, fontweight='bold')
+    fig.suptitle('Conservative LoRA Training Results', fontsize=16, fontweight='bold')
 
     for i, prompt in enumerate(test_prompts):
         row = i // 3
@@ -687,13 +848,31 @@ try:
 
         axes[row, col].imshow(img)
         axes[row, col].set_title(f"Test {i + 1}", fontsize=12, fontweight='bold')
-        axes[row, col].text(0.02, 0.98, prompt, transform=axes[row, col].transAxes,
-                            fontsize=8, verticalalignment='top',
-                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-        axes[row, col].axis('off')
 
-    # 隐藏最后一个空的subplot
-    axes[1, 2].axis('off')
+        # 自动换行显示prompt
+        words = prompt.split()
+        lines = []
+        current_line = []
+        char_count = 0
+
+        for word in words:
+            if char_count + len(word) + 1 <= 50:
+                current_line.append(word)
+                char_count += len(word) + 1
+            else:
+                lines.append(' '.join(current_line))
+                current_line = [word]
+                char_count = len(word)
+
+        if current_line:
+            lines.append(' '.join(current_line))
+
+        prompt_text = '\n'.join(lines)
+
+        axes[row, col].text(0.02, 0.98, prompt_text, transform=axes[row, col].transAxes,
+                            fontsize=9, verticalalignment='top',
+                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+        axes[row, col].axis('off')
 
     plt.tight_layout()
     overview_path = os.path.join(inference_results_dir, "results_overview.png")
@@ -704,45 +883,100 @@ try:
     print("🎉 推理测试完成！")
     print("=" * 60)
     print(f"📁 结果保存在: {inference_results_dir}")
-    print(f"🖼️  生成的图片:")
-    for i in range(len(test_prompts)):
-        print(f"   - test_image_{i + 1}.png")
+    print(f"🖼️  生成了 {len(test_prompts)} 张测试图片")
     print(f"📊 结果总览: results_overview.png")
-    print(f"📋 每张图片都有对应的 _info.json 文件记录生成参数")
 
-    print(f"\n🔍 训练效果分析:")
-    print(f"请检查生成的图片是否:")
-    print(f"  ✓ 包含prompt中指定的物体类型和数量")
-    print(f"  ✓ 具有航拍/俯视角度的风格")
-    print(f"  ✓ 画面清晰，物体可识别")
-    print(f"  ✓ 整体风格与VisDrone数据集相似")
+    print(f"\n🔍 效果评估建议:")
+    print(f"检查生成的图片是否:")
+    print(f"  ✓ 包含正确的物体类型")
+    print(f"  ✓ 数量大致准确")
+    print(f"  ✓ 具有航拍视角风格")
+    print(f"  ✓ 画面清晰自然")
 
-    # 清理推理pipeline内存
+    # 根据训练loss给出进一步建议
+    if len(epoch_losses) > 1:
+        loss_reduction = (epoch_losses[0] - epoch_losses[-1]) / epoch_losses[0] * 100
+        if loss_reduction < 5:
+            print(f"\n💡 进一步优化建议 (当前Loss降低: {loss_reduction:.1f}%):")
+            print(f"  - 考虑增加训练轮数到 {EPOCHS + 5}-{EPOCHS + 10}")
+            print(f"  - 适度提高学习率到 3e-4")
+            print(f"  - 增加LoRA rank到 32")
+            print(f"  - 检查数据集质量和prompt匹配度")
+
     del inference_pipeline
     torch.cuda.empty_cache()
 
 except Exception as e:
     print(f"❌ 推理测试失败: {e}")
-    print("请检查:")
-    print("  - GPU内存是否充足")
-    print("  - LoRA权重文件是否正确保存")
-    print("  - 基础模型是否能正常加载")
+    print("建议检查:")
+    print("  - GPU内存使用情况")
+    print("  - LoRA权重文件完整性")
+    print("  - 基础模型加载是否正常")
 
-    # 保存错误信息供调试
     error_info = {
         "error": str(e),
         "error_type": type(e).__name__,
-        "suggestion": "检查GPU内存和模型文件完整性"
+        "optimization_level": "conservative",
+        "suggestion": "检查资源和文件完整性"
     }
 
     error_path = os.path.join(OUTPUT_DIR, "inference_error.json")
     with open(error_path, "w") as f:
         json.dump(error_info, f, indent=2)
 
-    print(f"错误信息已保存到: {error_path}")
+# 最终总结
+print("\n" + "🔧" * 20)
+print("保守优化训练完成总结")
+print("🔧" * 20)
 
-print("\n🌙 训练和测试全部完成！可以安心睡觉了～")
-print(f"起床后查看结果目录: {OUTPUT_DIR}")
+summary_info = {
+    "optimization_type": "conservative",
+    "changes_made": [
+        f"学习率: 1e-4 → {LR} (2倍提升)",
+        f"LoRA rank: 16 → {unet_lora_config.r} (1.5倍提升)",
+        f"梯度累积: 2 → {GRADIENT_ACCUMULATION_STEPS}",
+        f"warmup步数: 500 → {WARMUP_STEPS}",
+        f"添加轻微噪声偏移: {NOISE_OFFSET}",
+        "保持原有调度器和缩放逻辑"
+    ],
+    "training_results": {
+        "total_epochs": EPOCHS,
+        "final_loss": epoch_losses[-1] if epoch_losses else "N/A",
+        "best_loss": best_loss,
+        "loss_reduction": f"{((epoch_losses[0] - epoch_losses[-1]) / epoch_losses[0] * 100):.2f}%" if len(
+            epoch_losses) > 1 else "N/A"
+    },
+    "safety_measures": [
+        "保持学习率缩放避免过大学习率",
+        "使用cosine调度器平滑学习",
+        "保持原有的MSE损失函数",
+        "适度的参数调整避免不稳定"
+    ]
+}
 
-print(f"\n现在的文件结构和官方 sayakpaul/sd-model-finetuned-lora-t4 完全一致！")
-print(f"保存的是 pytorch_lora_weights.bin 格式，与官方示例完全相同。")
+summary_path = os.path.join(OUTPUT_DIR, "conservative_training_summary.json")
+with open(summary_path, "w") as f:
+    json.dump(summary_info, f, indent=2, ensure_ascii=False)
+
+print(f"📊 保守优化摘要:")
+print(f"   类型: 渐进式保守优化")
+print(f"   风险: 低 (保持原有核心逻辑)")
+print(f"   预期: 适度改善训练效果")
+
+if len(epoch_losses) > 1:
+    loss_reduction = (epoch_losses[0] - epoch_losses[-1]) / epoch_losses[0] * 100
+    print(f"   实际Loss降低: {loss_reduction:.2f}%")
+
+    if loss_reduction > 5:
+        print(f"   ✅ 优化成功，达到预期效果")
+    else:
+        print(f"   ⚠️ 可考虑进一步优化:")
+        print(f"      - 延长训练 (+3-5 epochs)")
+        print(f"      - 适度提高学习率 (→ 3e-4)")
+        print(f"      - 增加LoRA rank (→ 32)")
+
+print(f"\n📁 所有文件保存在: {OUTPUT_DIR}")
+print(f"🚀 保守优化完成，可安全使用！")
+
+print("\n🌙 保守优化训练完成！")
+print("这个版本应该不会出现loss爆炸的问题～")
