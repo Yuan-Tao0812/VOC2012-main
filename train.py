@@ -198,9 +198,11 @@ for epoch in range(start_epoch, EPOCHS + 1):
     print(f"平均 Loss（Epoch {epoch}）: {avg_loss:.6f}")
 
     if epoch == EPOCHS:
+        unet_to_save = accelerator.unwrap_model(unet)
         unet.save_pretrained(os.path.join(OUTPUT_DIR, "unet"))
         torch.save(optimizer.state_dict(), os.path.join(OUTPUT_DIR, "optimizer.pt"))
     else:
+        unet_to_save = accelerator.unwrap_model(unet)
         unet.save_pretrained(os.path.join(CHECKPOINT_DIR, f"unet_epoch_{epoch}"))
         torch.save(optimizer.state_dict(), os.path.join(CHECKPOINT_DIR, f"optimizer_epoch_{epoch}.pt"))
 
