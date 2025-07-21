@@ -29,17 +29,23 @@ PRETRAINED_MODEL_PATH = "stable-diffusion-v1-5/stable-diffusion-v1-5"  # 修正�
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-# 针对L4 GPU优化的训练参数
-BATCH_SIZE = 2  # L4显存较小，降低batch size
-EPOCHS = 12  # 保持epoch数
-LR = 1e-4  # 官方推荐的学习率
-GRADIENT_ACCUMULATION_STEPS = 2  # 增加梯度累积，保持有效batch size = 2*2 = 4
+# 针对L4 GPU的激进训练参数（修复参数变化过小问题）
+BATCH_SIZE = 4  # 增加batch size（L4应该能承受）
+EPOCHS = 12
+LR = 5e-4  # 大幅提高学习率（原来1e-4 → 5e-4）
+GRADIENT_ACCUMULATION_STEPS = 1  # 禁用梯度累积，避免梯度稀释
 SCALE_LR = True
 MAX_TOKEN_LENGTH = 77
 IMAGE_SIZE = 512
-CACHE_LATENTS = True  # 保留缓存功能，但会更谨慎
+CACHE_LATENTS = True
 epoch_losses = []
 weight_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+
+print("🚀 使用激进配置修复训练问题")
+print(f"Batch size: {BATCH_SIZE} (增加)")
+print(f"Learning rate: {LR} (大幅提高)")
+print(f"梯度累积: {GRADIENT_ACCUMULATION_STEPS} (禁用)")
+print("LoRA配置: r=64, alpha=128 (大幅增强)")
 
 # 初始化Accelerator - L4优化设置
 accelerator = Accelerator(
@@ -63,10 +69,10 @@ unet.requires_grad_(False)
 vae.requires_grad_(False)
 text_encoder.requires_grad_(False)
 
-# LoRA配置
+# LoRA配置 - 激进设置修复训练效果
 unet_lora_config = LoraConfig(
-    r=16,
-    lora_alpha=32,
+    r=64,  # 大幅增加rank (16 → 64)
+    lora_alpha=128,  # 大幅增加alpha (32 → 128)
     init_lora_weights="gaussian",
     target_modules=["to_k", "to_q", "to_v", "to_out.0"],
 )
@@ -291,7 +297,7 @@ dataloader = DataLoader(
     batch_size=BATCH_SIZE,
     shuffle=True,
     collate_fn=collate_fn,
-    num_workers=2,  # L4适中的worker数量
+    num_workers=2,  # 保持适中的worker数量
     pin_memory=False,  # L4关闭pin_memory节省内存
     prefetch_factor=1,  # 减少预取
 )
@@ -407,16 +413,17 @@ def get_lora_param_stats(model):
 print(f"开始训练，从 epoch {start_epoch} 到 {EPOCHS}")
 print(f"总训练步数: {max_train_steps}")
 print(f"每epoch步数: {num_update_steps_per_epoch}")
-print(
-    f"使用批次大小: {BATCH_SIZE} × 梯度累积 {GRADIENT_ACCUMULATION_STEPS} = 有效batch {BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS}")
-print(f"🔧 L4 GPU优化配置:")
-print(f"   - 较小batch size以适应显存限制")
-print(f"   - 梯度累积保持训练效果")
-print(f"   - 优化的内存管理")
+print(f"🚀 激进配置修复:")
+print(f"   - Batch size: {BATCH_SIZE} (增加显存利用率)")
+print(f"   - Learning rate: {LR} (大幅提高学习效果)")
+print(f"   - LoRA rank: 64 (增强学习能力)")
+print(f"   - LoRA alpha: 128 (增强参数影响)")
+print(f"   - 禁用梯度累积 (避免梯度稀释)")
 if CACHE_LATENTS:
     print("✅ 启用latent缓存，大幅提升训练速度")
-print(f"预计每epoch时间: 约 75-90分钟 (L4 GPU + 6471张图)")
-print(f"预计总训练时间: 约 {EPOCHS * 1.3:.1f}-{EPOCHS * 1.5:.1f} 小时")
+print(f"预计每epoch时间: 约 45-60分钟 (L4 GPU + 优化配置)")
+print(f"预计总训练时间: 约 {EPOCHS * 0.8:.1f}-{EPOCHS * 1.0:.1f} 小时")
+print(f"💡 预期LoRA参数变化: >0.0001 每epoch (比之前大100倍)")
 
 # 训练循环
 for epoch in range(start_epoch, EPOCHS + 1):
@@ -513,8 +520,12 @@ for epoch in range(start_epoch, EPOCHS + 1):
         print(f"  平均Loss: {avg_loss:.6f}")
         print(f"  LoRA参数均值变化: {mean_change:.8f}")
 
-        if mean_change < 1e-8:
-            print(f"  ⚠️  警告: LoRA参数变化极小，可能需要调整学习率或检查梯度")
+        if mean_change < 1e-6:  # 调整阈值，因为现在期望更大的变化
+            print(f"  ⚠️  警告: LoRA参数变化极小，配置可能需要进一步调整")
+        elif mean_change > 1e-4:
+            print(f"  ✅  优秀: LoRA参数变化显著，训练效果良好")
+        else:
+            print(f"  ✅  正常: LoRA参数变化适中")
 
     # 保存检查点
     if epoch % 5 == 0 or epoch == EPOCHS:
