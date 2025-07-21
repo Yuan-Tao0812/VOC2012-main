@@ -61,7 +61,19 @@ unet.add_adapter(unet_lora_config)
 
 cast_training_params(unet, dtype=torch.float32)
 
-lora_layers = filter(lambda p: p.requires_grad, unet.parameters())
+# 过滤出 LoRA 可训练参数
+lora_layers = list(filter(lambda p: p.requires_grad, unet.parameters()))
+
+# 验证：打印可训练参数数量，确认不为0
+print(f"可训练参数数量（LoRA）：{len(lora_layers)}")
+assert len(lora_layers) > 0, "没有找到任何可训练参数，请检查LoRA是否正确添加"
+
+# 额外打印几个参数名和requires_grad状态，排查异常
+print("部分LoRA可训练参数名字和requires_grad状态示例：")
+for name, param in unet.named_parameters():
+    if param.requires_grad:
+        print(f"  {name}: requires_grad={param.requires_grad}")
+        break
 
 unet.enable_gradient_checkpointing()
 
@@ -156,9 +168,21 @@ unet, optimizer, dataloader, lr_scheduler = accelerator.prepare(
         unet, optimizer, dataloader, lr_scheduler
     )
 
+# 记录某个LoRA参数训练前后的均值，验证参数是否发生变化
+def get_sample_lora_param_mean(model):
+    for name, param in model.named_parameters():
+        if param.requires_grad and "lora" in name.lower():
+            return param.mean().item()
+    return None
+
 for epoch in range(start_epoch, EPOCHS + 1):
     unet.train()
     total_loss = 0.0
+
+    # 训练开始前打印LoRA参数均值
+    param_mean_before = get_sample_lora_param_mean(unet)
+    print(f"Epoch {epoch} 开始，示例LoRA参数均值: {param_mean_before}")
+
     loop = tqdm(dataloader, desc=f"Epoch {epoch}/{EPOCHS}")
 
     for batch in loop:
@@ -196,6 +220,12 @@ for epoch in range(start_epoch, EPOCHS + 1):
     avg_loss = total_loss / len(loop)
     epoch_losses.append(avg_loss)
     print(f"平均 Loss（Epoch {epoch}）: {avg_loss:.6f}")
+
+    # 训练结束后打印LoRA参数均值，检查是否变化
+    param_mean_after = get_sample_lora_param_mean(unet)
+    print(f"Epoch {epoch} 结束，示例LoRA参数均值: {param_mean_after}")
+    if param_mean_before == param_mean_after:
+        print(f"警告：Epoch {epoch} LoRA参数均值无变化，训练可能未生效！")
 
     if epoch == EPOCHS:
         unet_to_save = accelerator.unwrap_model(unet)
