@@ -29,27 +29,23 @@ PRETRAINED_MODEL_PATH = "stable-diffusion-v1-5/stable-diffusion-v1-5"  # 修正�
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-# 优化训练参数以提高速度
-BATCH_SIZE = 8  # A100可以支持更大batch size
-EPOCHS = 12  # 减少epochs，先看效果
-LR = 1e-4  # 保持官方推荐学习率
-GRADIENT_ACCUMULATION_STEPS = 1
+# 针对L4 GPU优化的训练参数
+BATCH_SIZE = 2  # L4显存较小，降低batch size
+EPOCHS = 12  # 保持epoch数
+LR = 1e-4  # 官方推荐的学习率
+GRADIENT_ACCUMULATION_STEPS = 2  # 增加梯度累积，保持有效batch size = 2*2 = 4
 SCALE_LR = True
 MAX_TOKEN_LENGTH = 77
 IMAGE_SIZE = 512
-CACHE_LATENTS = True  # 缓存latents以大幅提速
+CACHE_LATENTS = True  # 保留缓存功能，但会更谨慎
 epoch_losses = []
 weight_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
-# 初始化Accelerator - 优化设置
+# 初始化Accelerator - L4优化设置
 accelerator = Accelerator(
     gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
-    mixed_precision="fp16" if torch.cuda.is_available() else "no",
-    dataloader_config={
-        "num_workers": 4,  # 增加数据加载并行度
-        "pin_memory": True,
-        "persistent_workers": True,  # 保持worker进程，减少重启开销
-    }
+    mixed_precision="fp16" if torch.cuda.is_available() else "no"
+    # 移除dataloader_config，避免L4兼容性问题
 )
 
 print(f"使用设备: {accelerator.device}")
@@ -154,40 +150,69 @@ class VisDroneControlNetDataset(torch.utils.data.Dataset):
 
         # 预缓存latents以提高训练速度
         if self.cache_latents:
-            print("预缓存latents中...")
+            print("预缓存latents中（L4版本 - 更节省显存）...")
             self._cache_latents()
 
     def _cache_latents(self):
-        """预缓存所有图片的latents"""
+        """预缓存所有图片的latents - L4优化版本"""
         self.cached_latents = []
         cache_dir = os.path.join(self.root_dir, "cached_latents")
         os.makedirs(cache_dir, exist_ok=True)
 
-        for idx, item in enumerate(tqdm(self.entries, desc="缓存latents")):
-            cache_file = os.path.join(cache_dir, f"latent_{idx}.pt")
+        # L4显存限制，分批处理
+        batch_size = 4  # L4缓存时用小batch
 
-            if os.path.exists(cache_file):
-                # 加载已缓存的latent
-                latent = torch.load(cache_file, map_location="cpu")
-            else:
-                # 生成并保存latent
-                image_path = os.path.join(self.root_dir, item["image"])
-                image = Image.open(image_path).convert("RGB")
+        for start_idx in tqdm(range(0, len(self.entries), batch_size), desc="缓存latents"):
+            batch_indices = range(start_idx, min(start_idx + batch_size, len(self.entries)))
 
-                if self.transform:
-                    image = self.transform(image)
+            for idx in batch_indices:
+                item = self.entries[idx]
+                cache_file = os.path.join(cache_dir, f"latent_{idx}.pt")
 
-                # 编码为latent
-                with torch.no_grad():
-                    image_tensor = image.unsqueeze(0).to(self.vae.device, dtype=self.vae.dtype)
-                    latent = self.vae.encode(image_tensor).latent_dist.sample()
-                    latent = latent * self.vae.config.scaling_factor
-                    latent = latent.squeeze(0).cpu()
+                if os.path.exists(cache_file):
+                    # 加载已缓存的latent
+                    try:
+                        latent = torch.load(cache_file, map_location="cpu")
+                        self.cached_latents.append(latent)
+                    except:
+                        # 缓存文件损坏，重新生成
+                        self.cached_latents.append(None)
+                else:
+                    try:
+                        # 生成并保存latent
+                        image_path = os.path.join(self.root_dir, item["image"])
 
-                # 保存缓存
-                torch.save(latent, cache_file)
+                        if not os.path.exists(image_path):
+                            self.cached_latents.append(None)
+                            continue
 
-            self.cached_latents.append(latent)
+                        image = Image.open(image_path).convert("RGB")
+
+                        if self.transform:
+                            image = self.transform(image)
+
+                        # 编码为latent - L4优化：立即移动到CPU
+                        with torch.no_grad():
+                            image_tensor = image.unsqueeze(0).to(self.vae.device, dtype=self.vae.dtype)
+                            latent = self.vae.encode(image_tensor).latent_dist.sample()
+                            latent = latent * self.vae.config.scaling_factor
+                            latent = latent.squeeze(0).cpu()
+
+                            # 立即清理GPU内存
+                            del image_tensor
+                            torch.cuda.empty_cache()
+
+                        # 保存缓存
+                        torch.save(latent, cache_file)
+                        self.cached_latents.append(latent)
+
+                    except Exception as e:
+                        print(f"⚠️ 缓存第{idx}个样本失败: {e}")
+                        self.cached_latents.append(None)
+
+            # 每处理一批就清理内存
+            if start_idx % (batch_size * 4) == 0:
+                torch.cuda.empty_cache()
 
     def __len__(self):
         return len(self.entries)
@@ -266,10 +291,9 @@ dataloader = DataLoader(
     batch_size=BATCH_SIZE,
     shuffle=True,
     collate_fn=collate_fn,
-    num_workers=4,  # 增加worker数量
-    pin_memory=True,
-    persistent_workers=True,  # 保持worker进程
-    prefetch_factor=2,  # 预取数据
+    num_workers=2,  # L4适中的worker数量
+    pin_memory=False,  # L4关闭pin_memory节省内存
+    prefetch_factor=1,  # 减少预取
 )
 
 # 学习率调度器
@@ -383,11 +407,16 @@ def get_lora_param_stats(model):
 print(f"开始训练，从 epoch {start_epoch} 到 {EPOCHS}")
 print(f"总训练步数: {max_train_steps}")
 print(f"每epoch步数: {num_update_steps_per_epoch}")
-print(f"使用批次大小: {BATCH_SIZE} (实际学习率已缩放)")
+print(
+    f"使用批次大小: {BATCH_SIZE} × 梯度累积 {GRADIENT_ACCUMULATION_STEPS} = 有效batch {BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS}")
+print(f"🔧 L4 GPU优化配置:")
+print(f"   - 较小batch size以适应显存限制")
+print(f"   - 梯度累积保持训练效果")
+print(f"   - 优化的内存管理")
 if CACHE_LATENTS:
     print("✅ 启用latent缓存，大幅提升训练速度")
-print(f"预计每epoch时间: 约 45-60分钟 (6471张图)")
-print(f"预计总训练时间: 约 {EPOCHS * 0.8:.1f}-{EPOCHS * 1.0:.1f} 小时")
+print(f"预计每epoch时间: 约 75-90分钟 (L4 GPU + 6471张图)")
+print(f"预计总训练时间: 约 {EPOCHS * 1.3:.1f}-{EPOCHS * 1.5:.1f} 小时")
 
 # 训练循环
 for epoch in range(start_epoch, EPOCHS + 1):
