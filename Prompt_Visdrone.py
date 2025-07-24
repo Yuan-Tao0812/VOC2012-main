@@ -1,172 +1,209 @@
 import os
 import json
+import shutil
 from PIL import Image, ImageDraw
+from collections import Counter, defaultdict
+import numpy as np
+from scipy.ndimage import label
 from tqdm import tqdm
 
-# ========== 配置 ==========
-YOLO_LABELS_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-renamed/labels/"
-IMAGES_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-renamed/images/"
-OUTPUT_DIR = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train-split/"
-PROMPT_JSONL = os.path.join(OUTPUT_DIR, "prompt.jsonl")
+# === 配置路径 ===
+YOLO_LABELS_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-train/labels/"
+IMAGES_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-train/images/"
+LAYOUTS_OUT = "/content/drive/MyDrive/VOC2012/VOC2012-train/conditioning_images"
+OUTPUT_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-train"
 
-MAX_OBJECTS = 10
-VISDRONE_CLASSES = [
-    "pedestrian", "people", "bicycle", "car", "van",
-    "truck", "tricycle", "awning-tricycle", "bus", "motor"
-]
+os.makedirs(LAYOUTS_OUT, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-os.makedirs(os.path.join(OUTPUT_DIR, "images"), exist_ok=True)
-os.makedirs(os.path.join(OUTPUT_DIR, "layouts"), exist_ok=True)
+CATEGORY_COLORS = {
+    0: (255, 0, 0), 1: (0, 255, 0), 2: (0, 0, 255), 3: (255, 255, 0), 4: (255, 0, 255),
+    5: (0, 255, 255), 6: (128, 0, 0), 7: (0, 128, 0), 8: (0, 0, 128), 9: (128, 128, 0),
+    10: (255, 128, 0), 11: (128, 255, 0), 12: (0, 255, 128), 13: (128, 0, 255), 14: (255, 128, 128),
+    15: (128, 255, 128), 16: (128, 128, 255), 17: (255, 255, 128), 18: (255, 128, 255), 19: (128, 255, 255)
+}
 
-global_counter = 1  # ✅ 改动1：初始化全局图像编号计数器
+CATEGORY_NAMES = {
+    0: "aeroplane", 1: "bicycle", 2: "bird", 3: "boat", 4: "bottle",
+    5: "bus", 6: "car", 7: "cat", 8: "chair", 9: "cow",
+    10: "diningtable", 11: "dog", 12: "horse", 13: "motorbike", 14: "person",
+    15: "pottedplant", 16: "sheep", 17: "sofa", 18: "train", 19: "tvmonitor"
+}
 
-def load_yolo_boxes(label_path, img_w, img_h):
-    boxes = []
-    with open(label_path, 'r') as f:
-        for line in f:
-            parts = line.strip().split()
-            if len(parts) != 5:
-                continue
-            cls_id, cx, cy, w, h = map(float, parts)
-            x1 = (cx - w/2) * img_w
-            y1 = (cy - h/2) * img_h
-            x2 = (cx + w/2) * img_w
-            y2 = (cy + h/2) * img_h
-            boxes.append((int(cls_id), x1, y1, x2, y2))
-    return boxes
 
-def get_ioa(box, crop_box):
-    _, x1, y1, x2, y2 = box
-    cx1, cy1, cx2, cy2 = crop_box
-    inter_x1 = max(x1, cx1)
-    inter_y1 = max(y1, cy1)
-    inter_x2 = min(x2, cx2)
-    inter_y2 = min(y2, cy2)
-    inter_w = max(0, inter_x2 - inter_x1)
-    inter_h = max(0, inter_y2 - inter_y1)
-    inter_area = inter_w * inter_h
-    box_area = (x2 - x1) * (y2 - y1)
-    return inter_area / box_area if box_area > 0 else 0
+def yolo_to_box(yolo_box, img_w, img_h):
+    cls, x, y, w, h = yolo_box
+    x1 = int((x - w / 2) * img_w)
+    y1 = int((y - h / 2) * img_h)
+    x2 = int((x + w / 2) * img_w)
+    y2 = int((y + h / 2) * img_h)
+    return int(cls), max(0, x1), max(0, y1), min(img_w - 1, x2), min(img_h - 1, y2)
 
-def get_boxes_in_crop(boxes, crop_box, threshold=0.5):
-    cx1, cy1, cx2, cy2 = crop_box
-    selected = []
-    for box in boxes:
-        cls_id, x1, y1, x2, y2 = box
-        ioa = get_ioa(box, crop_box)
-        if ioa >= threshold:
-            adj_x1 = max(0, x1 - cx1)
-            adj_y1 = max(0, y1 - cy1)
-            adj_x2 = min(cx2 - cx1, x2 - cx1)
-            adj_y2 = min(cy2 - cy1, y2 - cy1)
-            selected.append((cls_id, adj_x1, adj_y1, adj_x2, adj_y2))
-    return selected
 
-def generate_layout(boxes, width, height):
-    layout = Image.new("L", (width, height), 0)
-    draw = ImageDraw.Draw(layout)
-    for _, x1, y1, x2, y2 in boxes:
-        draw.rectangle([x1, y1, x2, y2], fill=255)
-    return layout.convert("RGB")
+def add_black_border(draw, box, border=2):
+    x1, y1, x2, y2 = box
+    for i in range(border):
+        draw.rectangle([x1 + i, y1 + i, x2 - i, y2 - i], outline=(0, 0, 0))
 
-def save_crop(img, layout, crop_box, boxes, save_name):
-    cx1, cy1, cx2, cy2 = map(int, crop_box)
-    crop_img = img.crop((cx1, cy1, cx2, cy2))
-    crop_layout = generate_layout(boxes, cx2 - cx1, cy2 - cy1)
-    crop_layout = crop_layout.crop((0, 0, cx2 - cx1, cy2 - cy1))
 
-    crop_img = crop_img.resize((512, 512), Image.LANCZOS)
-    crop_layout = crop_layout.resize((512, 512), Image.LANCZOS)
+def clean_target_fragments(layout_np, mask_map, target_id, box, color):
+    x1, y1, x2, y2 = box
+    region_mask = (mask_map[y1:y2 + 1, x1:x2 + 1] == target_id)
+    color_mask = np.all(layout_np[y1:y2 + 1, x1:x2 + 1] == color, axis=2)
+    target_mask = np.logical_and(region_mask, color_mask)
 
-    img_path = f"images/{save_name}.jpg"
-    layout_path = f"layouts/{save_name}.png"
+    labeled, num = label(target_mask)
+    if num <= 1:
+        return
+    areas = [(labeled == i).sum() for i in range(1, num + 1)]
+    max_idx = np.argmax(areas) + 1
+    for i in range(1, num + 1):
+        if i == max_idx:
+            continue
+        mask = (labeled == i)
+        layout_np[y1:y2 + 1, x1:x2 + 1][mask] = (0, 0, 0)
 
-    crop_img.save(os.path.join(OUTPUT_DIR, img_path))
-    crop_layout.save(os.path.join(OUTPUT_DIR, layout_path))
 
-    classes = [b[0] for b in boxes]
-    desc_parts = []
-    for cid in sorted(set(classes)):
-        count = classes.count(cid)
-        name = VISDRONE_CLASSES[cid]
-        desc_parts.append(f"{count} {name}{'s' if count > 1 else ''}")
-    left2right = sorted(boxes, key=lambda b: (b[1] + b[3]) / 2)
-    sequence = ", ".join([VISDRONE_CLASSES[b[0]] for b in left2right])
-    prompt = f"There are {', '.join(desc_parts)} in the image. From left to right: {sequence}."
+def generate_text_description(object_counts):
+    """根据对象计数生成文本描述"""
+    if not object_counts:
+        return "An image."
 
-    return {
-        "image_path": img_path,
-        "layout_path": layout_path,
-        "prompt": prompt
-    }
+    # 按类别ID排序
+    sorted_objects = sorted(object_counts.items())
+    descriptions = []
 
-def recursive_crop(img, layout, boxes, crop_box, image_id, prefix):
-    cx1, cy1, cx2, cy2 = map(int, crop_box)
-    selected_boxes = get_boxes_in_crop(boxes, crop_box, threshold=0.5)
+    for class_id, count in sorted_objects:
+        class_name = CATEGORY_NAMES[class_id]
+        # 处理复数形式
+        if count == 1:
+            if class_name.endswith('s') or class_name in ['sheep', 'person']:
+                if class_name == 'person':
+                    descriptions.append(f"{count} person")
+                else:
+                    descriptions.append(f"{count} {class_name}")
+            else:
+                descriptions.append(f"{count} {class_name}")
+        else:
+            if class_name == 'person':
+                descriptions.append(f"{count} persons")
+            elif class_name.endswith('s'):
+                descriptions.append(f"{count} {class_name}")
+            elif class_name == 'sheep':
+                descriptions.append(f"{count} sheep")
+            else:
+                descriptions.append(f"{count} {class_name}s")
 
-    if len(selected_boxes) <= MAX_OBJECTS:
-        global global_counter  # ✅ 改动2
-        save_name = f"{global_counter:06d}"
-        global_counter += 1
-        result = save_crop(img, layout, crop_box, selected_boxes, save_name)
-        write_entry(result)  # ✅ 改动3：边裁剪边写入
-        show_progress()      # ✅ 改动4：更新数字显示
-        return [result]
-
-    width = cx2 - cx1
-    height = cy2 - cy1
-
-    results = []
-    if width >= height:
-        mid_x = (cx1 + cx2) // 2
-        results.extend(recursive_crop(img, layout, boxes, (cx1, cy1, mid_x, cy2), image_id, prefix + "_0"))
-        results.extend(recursive_crop(img, layout, boxes, (mid_x, cy1, cx2, cy2), image_id, prefix + "_1"))
+    if len(descriptions) == 1:
+        return f"An image of {descriptions[0]}."
+    elif len(descriptions) == 2:
+        return f"An image of {descriptions[0]} and {descriptions[1]}."
     else:
-        mid_y = (cy1 + cy2) // 2
-        results.extend(recursive_crop(img, layout, boxes, (cx1, cy1, cx2, mid_y), image_id, prefix + "_0"))
-        results.extend(recursive_crop(img, layout, boxes, (cx1, mid_y, cx2, cy2), image_id, prefix + "_1"))
-    return results
+        return f"An image of {', '.join(descriptions[:-1])} and {descriptions[-1]}."
 
-written_count = 0  # ✅ 改动5：计数器定义
-
-def write_entry(entry):  # ✅ 改动6：单条写入函数
-    global written_count
-    with open(PROMPT_JSONL, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
-    written_count += 1
-
-def show_progress():  # ✅ 改动7：动态进度显示
-    print(f"\r已写入数量: {written_count}", end="")
 
 def main():
-    if os.path.exists(PROMPT_JSONL):
-        os.remove(PROMPT_JSONL)  # ✅ 改动8：清空旧文件
+    skipped_small_objects = 0
+    images_with_small_objects = []  # 记录包含小目标的图像编号
+    metadata_file = os.path.join(OUTPUT_DIR, 'metadata.jsonl')
 
-    for label_file in tqdm(os.listdir(YOLO_LABELS_DIR)):
-        if not label_file.endswith(".txt"):
-            continue
+    # 获取所有图像文件并排序
+    image_files = [f for f in os.listdir(IMAGES_DIR) if f.lower().endswith(('.jpg', '.png'))]
+    image_files.sort()
 
-        image_id = label_file[:-4]
-        image_path = os.path.join(IMAGES_DIR, f"{image_id}.jpg")
-        label_path = os.path.join(YOLO_LABELS_DIR, label_file)
+    with open(metadata_file, 'w', encoding='utf-8') as jsonl_file:
+        for fname in tqdm(image_files, desc="Processing images"):
+            base = os.path.splitext(fname)[0]
+            img_path = os.path.join(IMAGES_DIR, fname)
+            label_path = os.path.join(YOLO_LABELS_DIR, base + ".txt")
 
-        if not os.path.exists(image_path):
-            continue
+            if not os.path.exists(label_path):
+                continue
 
-        img = Image.open(image_path).convert("RGB")
-        boxes = load_yolo_boxes(label_path, *img.size)
+            img = Image.open(img_path).convert("RGB")
+            w, h = img.size
+            layout = Image.new("RGB", (w, h), (0, 0, 0))
+            draw = ImageDraw.Draw(layout)
+            mask_map = np.full((h, w), fill_value=-2, dtype=np.int32)  # -2 = 未处理
 
-        if not boxes:
-            continue
+            boxes = []
+            counter = Counter()
+            object_counts = defaultdict(int)  # 用于生成文本描述的对象计数
+            target_id = 0
+            has_small_objects = False  # 标记当前图像是否包含小目标
 
-        width, height = img.size
-        full_layout = generate_layout(boxes, width, height)
-        crop_box = (0, 0, width, height)
-        recursive_crop(img, full_layout, boxes, crop_box, image_id, "0")
+            with open(label_path, "r") as f:
+                for line in f:
+                    vals = list(map(float, line.strip().split()))
+                    if len(vals) != 5:
+                        continue
+                    cls, x1, y1, x2, y2 = yolo_to_box(vals, w, h)
 
-    print(f"\n✅ 完成，写入成功，共生成裁剪块数量: {written_count}")  # ✅ 改动9
+                    # 检查目标大小，过滤过小的目标
+                    if x2 - x1 < 6 or y2 - y1 < 6:
+                        skipped_small_objects += 1
+                        has_small_objects = True
+                        continue
+
+                    # 只有通过大小检查的目标才会被添加到boxes和计数中
+                    boxes.append((target_id, cls, (x1, y1, x2, y2)))
+                    counter[cls] += 1
+                    object_counts[cls] += 1  # 用于文本描述的计数
+                    target_id += 1
+
+            # 如果当前图像包含小目标，记录其编号
+            if has_small_objects:
+                images_with_small_objects.append(base)
+
+            # 生成布局图像
+            layout_np = np.array(layout)
+            for tid, cls, box in boxes:
+                x1, y1, x2, y2 = box
+                color = CATEGORY_COLORS.get(cls, (255, 255, 255))
+                layout_np[y1:y2 + 1, x1:x2 + 1] = color
+                mask_map[y1:y2 + 1, x1:x2 + 1] = tid
+                layout = Image.fromarray(layout_np)
+                draw = ImageDraw.Draw(layout)
+                add_black_border(draw, box, border=2)
+                layout_np = np.array(layout)
+                mask_map[y1:y2 + 1, x1:x2 + 1][np.all(layout_np[y1:y2 + 1, x1:x2 + 1] == (0, 0, 0), axis=2)] = -1
+
+            # 清理碎片
+            for tid, cls, box in boxes:
+                color = CATEGORY_COLORS.get(cls, (255, 255, 255))
+                clean_target_fragments(layout_np, mask_map, tid, box, color)
+
+            # 保存布局图像
+            layout = Image.fromarray(layout_np)
+            layout_name = base + ".png"
+            layout.save(os.path.join(LAYOUTS_OUT, layout_name))
+
+            # 生成文本描述（只包含未被过滤的目标）
+            text_description = generate_text_description(object_counts)
+
+            # 创建metadata条目
+            metadata_entry = {
+                "image": f"images/{fname}",
+                "conditioning_image": f"conditioning_images/{layout_name}",
+                "text": text_description
+            }
+
+            # 写入JSONL文件
+            jsonl_file.write(json.dumps(metadata_entry, ensure_ascii=False) + '\n')
+
+    print("\n所有图像处理完成。")
+    print(f"跳过太小的目标：{skipped_small_objects} 个")
+    print(f"包含小目标的图像数量：{len(images_with_small_objects)} 个")
+    if images_with_small_objects:
+        print(f"包含小目标的图像编号：{', '.join(images_with_small_objects)}")
+    print(f"成功生成metadata.jsonl文件: {metadata_file}")
+
+    # 验证生成的文件
+    if os.path.exists(metadata_file):
+        with open(metadata_file, 'r', encoding='utf-8') as f:
+            actual_lines = sum(1 for _ in f)
+        print(f"metadata.jsonl实际包含 {actual_lines} 行")
+
 
 if __name__ == "__main__":
     main()
