@@ -8,10 +8,10 @@ from scipy.ndimage import label
 from tqdm import tqdm
 
 # === 配置路径 ===
-YOLO_LABELS_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-train/labels/"
-IMAGES_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-train/images/"
-LAYOUTS_OUT = "/content/drive/MyDrive/VOC2012/VOC2012-train/conditioning_images"
-OUTPUT_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-train"
+YOLO_LABELS_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-Segmentation-train/labels/"
+IMAGES_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-Segmentation-train/images/"
+LAYOUTS_OUT = "/content/drive/MyDrive/VOC2012/VOC2012-Segmentation-train/conditioning_images"
+OUTPUT_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-Segmentation-train"
 
 os.makedirs(LAYOUTS_OUT, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -183,7 +183,7 @@ def main():
 
             # 创建metadata条目
             metadata_entry = {
-                "image": f"images/{fname}",
+                "file_name": f"images/{fname}",
                 "conditioning_image": f"conditioning_images/{layout_name}",
                 "text": text_description
             }
