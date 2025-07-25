@@ -8,10 +8,10 @@ from scipy.ndimage import label
 from tqdm import tqdm
 
 # === 配置路径 ===
-YOLO_LABELS_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-Segmentation-train/labels/"
-IMAGES_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-Segmentation-train/images/"
-LAYOUTS_OUT = "/content/drive/MyDrive/VOC2012/VOC2012-Segmentation-train/conditioning_images"
-OUTPUT_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-Segmentation-train"
+YOLO_LABELS_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-Segmentation-val/labels/"
+IMAGES_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-Segmentation-val/images/"
+LAYOUTS_OUT = "/content/drive/MyDrive/VOC2012/VOC2012-Segmentation-val/conditioning_images"
+OUTPUT_DIR = "/content/drive/MyDrive/VOC2012/VOC2012-Segmentation-val"
 
 os.makedirs(LAYOUTS_OUT, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
